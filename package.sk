@@ -13,8 +13,6 @@ import:
     java.util.zip.ZipInputStream
     org.bukkit.Bukkit
 
-# pure
-
 # nothing comes back for blank input, so trimmed blanks read as absent
 local function trim(text: String) -> String:
     while {_text} starts with " ":
@@ -58,7 +56,6 @@ local function pkg_root() -> String:
 local function pkg_dir(name: String) -> String:
     return "%pkg_root()%/%{_name}%"
 
-# skript skips - prefixed folders, so a rename is enough to disable a package
 local function pkg_disabled_dir(name: String) -> String:
     return "%pkg_root()%/-%{_name}%"
 
@@ -116,7 +113,6 @@ local function requirement_min(entry: String) -> String:
         stop
     return trim(last element of split {_entry} at ">=")
 
-# helpers that fail in several ways leave a message here, read once
 local function pkg_fail(message: String):
     set {-package::error} to {_message}
 
@@ -124,8 +120,6 @@ local function pkg_error() -> String:
     set {_message} to {-package::error}
     delete {-package::error}
     return {_message}
-
-# reflect
 
 local function scripts_root() -> String:
     set {_data} to Skript.getInstance().getDataFolder().getCanonicalPath()
@@ -243,9 +237,11 @@ local function pkg_by_origin(url: String) -> String:
 # one missing package dependency, nothing when present (enabled or disabled)
 local function pkg_dep_missing(entry: String) -> String:
     set {_entry} to trim({_entry}) ? ""
-    if {_entry} contains "://":
-        if pkg_by_origin({_entry}) is set:
-            stop
+    if all:
+        {_entry} contains "://":
+        pkg_by_origin({_entry}) is set
+    then:
+        stop
     set {_dep} to pkg_name({_entry})
     if {_dep} is not set:
         stop
@@ -257,11 +253,9 @@ local function pkg_dep_missing(entry: String) -> String:
 local function pkg_missing(dir: String) -> Strings:
     set {_lines::*} to file_lines("%{_dir}%/package.txt")
     set {_requires::*} to split (manifest_value({_lines::*}, "requires") ? "") at ","
-    for {_entry} in {_requires::*}:
-        add requirement_missing({_entry}) to {_missing::*}
+    set {_require_missing::*} to {_requires::*} transformed with [requirement_missing({_entry})]
     set {_packages::*} to split (manifest_value({_lines::*}, "packages") ? "") at ","
-    for {_entry} in {_packages::*}:
-        add pkg_dep_missing({_entry}) to {_missing::*}
+    set {_package_missing::*} to {_packages::*} transformed with [pkg_dep_missing({_entry})]
     return {_missing::*}
 
 # info row for one manifest entry: "  ok: ..." or "  missing: ..."
@@ -351,6 +345,7 @@ local function pkg_install(url: String, depth: Integer) -> String:
     return {_name}
 
 command /package <effect: text> [<pkg: text>]:
+    permission: console and ops
     trigger:
         if {_effect} is "list":
             set {_packages::*} to pkg_list()
