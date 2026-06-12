@@ -1,0 +1,448 @@
+import:
+    ch.njol.skript.Skript
+    java.io.ByteArrayInputStream
+    java.net.URI
+    java.net.http.HttpClient
+    java.net.http.HttpClient$Redirect
+    java.net.http.HttpRequest
+    java.net.http.HttpResponse$BodyHandlers
+    java.nio.file.Files
+    java.nio.file.Path
+    java.nio.file.StandardOpenOption
+    java.util.Comparator
+    java.util.zip.ZipInputStream
+    org.bukkit.Bukkit
+
+# pure
+
+# nothing comes back for blank input, so trimmed blanks read as absent
+local function trim(text: String) -> String:
+    while {_text} starts with " ":
+        set {_text} to subtext of {_text} from 2 to length of {_text}
+    while {_text} ends with " ":
+        set {_text} to the first (length of {_text} - 1) characters of {_text}
+    if length of {_text} <= 0:
+        stop
+    return {_text}
+
+# strips decoration from a repo link: trailing slash, .git suffix
+local function repo_url(url: String) -> String:
+    if {_url} ends with "/":
+        set {_url} to the first (length of {_url} - 1) characters of {_url}
+    if {_url} ends with ".git":
+        set {_url} to the first (length of {_url} - 4) characters of {_url}
+    return {_url}
+
+# package name from a link or bare name, - is reserved as the disabled marker
+local function pkg_name(url: String) -> String:
+    set {_name} to last element of (split repo_url({_url}) at "/")
+    if {_name} ends with ".zip":
+        set {_name} to the first (length of {_name} - 4) characters of {_name}
+    if any:
+        length of {_name} <= 0
+        {_name} is "." or ".."
+        {_name} starts with "-"
+    then:
+        stop
+    return {_name}
+
+# turns a repo link into an archive link, direct .zip links pass through
+local function pkg_zip_url(url: String) -> String:
+    if {_url} ends with ".zip":
+        return {_url}
+    return "%repo_url({_url})%/archive/HEAD.zip"
+
+local function pkg_root() -> String:
+    return "%scripts_root()%/packages"
+
+local function pkg_dir(name: String) -> String:
+    return "%pkg_root()%/%{_name}%"
+
+# skript skips - prefixed folders, so a rename is enough to disable a package
+local function pkg_disabled_dir(name: String) -> String:
+    return "%pkg_root()%/-%{_name}%"
+
+local function pkg_display(name: String) -> String:
+    if {_name} does not start with "-":
+        return {_name}
+    return "%subtext of {_name} from 2 to length of {_name}% (disabled)"
+
+# drops the root folder archives wrap their content in (repo-HEAD/...)
+local function strip_root(path: String) -> String:
+    set {_slash} to first index of "/" in {_path}
+    if {_slash} <= 0:
+        stop
+    set {_relative} to subtext of {_path} from ({_slash} + 1) to length of {_path}
+    if {_relative} is not set:
+        stop
+    return {_relative}
+
+# numeric segment-wise compare, missing segments count as 0,
+# pre-release suffixes are ignored (2.6.3-beta compares as 2.6.3)
+local function version_at_least(version: String, minimum: String) -> Boolean:
+    set {_have::*} to split (first element of split {_version} at "-") at "."
+    set {_want::*} to split (first element of split {_minimum} at "-") at "."
+    set {_count} to max(size of {_have::*}, size of {_want::*})
+    loop {_count} times:
+        set {_a} to ({_have::%loop-number%} parsed as integer) ? 0
+        set {_b} to ({_want::%loop-number%} parsed as integer) ? 0
+        if {_a} > {_b}:
+            return true
+        if {_a} < {_b}:
+            return false
+    return true
+
+# first "key: value" line of a manifest, comment (#) lines are skipped
+local function manifest_value(lines: Strings, key: String) -> String:
+    for {_line} in {_lines::*}:
+        set {_value} to manifest_line_value({_line}, {_key})
+        if {_value} is set:
+            return {_value}
+
+local function manifest_line_value(line: String, key: String) -> String:
+    set {_line} to trim({_line})
+    if {_line} starts with "#":
+        stop
+    if {_line} does not start with "%{_key}%:":
+        stop
+    return trim(subtext of {_line} from (length of {_key} + 2) to length of {_line})
+
+# one "requires" entry is a plugin name, optionally followed by >= version
+local function requirement_name(entry: String) -> String:
+    return trim(first element of split {_entry} at ">=")
+
+local function requirement_min(entry: String) -> String:
+    if {_entry} does not contain ">=":
+        stop
+    return trim(last element of split {_entry} at ">=")
+
+# helpers that fail in several ways leave a message here, read once
+local function pkg_fail(message: String):
+    set {-package::error} to {_message}
+
+local function pkg_error() -> String:
+    set {_message} to {-package::error}
+    delete {-package::error}
+    return {_message}
+
+# reflect
+
+local function scripts_root() -> String:
+    set {_data} to Skript.getInstance().getDataFolder().getCanonicalPath()
+    return "%{_data}%/scripts"
+
+local function dir_exists(path: String) -> Boolean:
+    return whether Files.exists(Path.of({_path})) = true
+
+local function dir_create(path: String):
+    Files.createDirectories(Path.of({_path}))
+
+local function dir_rename(from: String, to: String):
+    Files.move(Path.of({_from}), Path.of({_to}))
+
+local function pkg_list() -> Strings:
+    if dir_exists(pkg_root()) = false:
+        stop
+    set {_paths::*} to ...Files.list(Path.of(pkg_root())).sorted().toArray()
+    for {_path} in {_paths::*}:
+        if Files.isDirectory({_path}) is true:
+            add {_path}.getFileName().toString() to {_names::*}
+    return {_names::*}
+
+# deletes contents before their parent folders (deepest paths first)
+local function dir_delete(path: String):
+    set {_paths::*} to ...Files.walk(Path.of({_path})).sorted(Comparator.reverseOrder()).toArray()
+    for {_path} in {_paths::*}:
+        Files.delete({_path})
+
+local function file_lines(path: String) -> Strings:
+    if dir_exists({_path}) = false:
+        stop
+    set {_lines::*} to ...Files.readAllLines(Path.of({_path})).toArray()
+    return {_lines::*}
+
+local function file_append_line(path: String, line: String):
+    set {_options} to [StandardOpenOption.CREATE, StandardOpenOption.APPEND]
+    Files.writeString(Path.of({_path}), "%{_line}%%nl%", {_options})
+
+local function plugin_version(name: String) -> String:
+    set {_plugin} to Bukkit.getPluginManager().getPlugin({_name})
+    if {_plugin} is not set:
+        stop
+    return {_plugin}.getDescription().getVersion()
+
+# returns the response body bytes, or nothing if anything fails
+local function http_get(url: String) -> Object:
+    set {_uri} to try URI.create({_url})
+    set {_builder} to try HttpRequest.newBuilder({_uri})
+    if {_builder} is not set:
+        stop
+    set {_request} to {_builder}.build()
+    set {_client} to HttpClient.newBuilder().followRedirects(Redirect.NORMAL).build()
+    set {_response} to try {_client}.send({_request}, BodyHandlers.ofByteArray())
+    if {_response} is not set:
+        stop
+    if {_response}.statusCode() != 200:
+        stop
+    return {_response}.body()
+
+local function zip_extract(bytes: Object, dest: String):
+    set {_root} to Path.of({_dest})
+    set {_options} to [StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING]
+    set {_zip} to new ZipInputStream(new ByteArrayInputStream({_bytes}))
+    set {_entry} to {_zip}.getNextEntry()
+    while {_entry} is set:
+        zip_extract_entry({_zip}, {_entry}, {_root}, {_options})
+        set {_entry} to {_zip}.getNextEntry()
+    {_zip}.close()
+
+local function zip_extract_entry(zip: Object, entry: Object, root: Object, options: Object):
+    set {_relative} to strip_root({_entry}.getName())
+    if {_relative} is not set:
+        stop
+    set {_target} to {_root}.resolve({_relative}).normalize()
+    if {_target}.startsWith({_root}) = false:
+        stop
+    if {_entry}.isDirectory() is true:
+        Files.createDirectories({_target})
+        stop
+    Files.createDirectories({_target}.getParent())
+    Files.write({_target}, {_zip}.readAllBytes(), {_options})
+
+# package
+
+local function pkg_installed(name: String) -> Boolean:
+    if dir_exists(pkg_dir({_name})) is true:
+        return true
+    return whether dir_exists(pkg_disabled_dir({_name})) = true
+
+# one unmet plugin requirement as a readable line, nothing when satisfied
+local function requirement_missing(entry: String) -> String:
+    set {_name} to requirement_name({_entry})
+    if {_name} is not set:
+        stop
+    set {_installed} to plugin_version({_name})
+    if {_installed} is not set:
+        return "%{_name}% (not installed)"
+    set {_min} to requirement_min({_entry})
+    if {_min} is not set:
+        stop
+    if version_at_least({_installed}, {_min}) is true:
+        stop
+    return "%{_name}% >= %{_min}% (installed: %{_installed}%)"
+
+# resolves a dependency url to the installed package recorded as coming
+# from it, since a manifest name can differ from the url-derived one
+local function pkg_by_origin(url: String) -> String:
+    set {_url} to repo_url({_url})
+    for {_folder} in pkg_list():
+        set {_origin} to manifest_value(file_lines("%pkg_dir({_folder})%/package.txt"), "origin")
+        if repo_url({_origin} ? "") is {_url}:
+            return {_folder}
+
+# one missing package dependency, nothing when present (enabled or disabled)
+local function pkg_dep_missing(entry: String) -> String:
+    set {_entry} to trim({_entry}) ? ""
+    if {_entry} contains "://":
+        if pkg_by_origin({_entry}) is set:
+            stop
+    set {_dep} to pkg_name({_entry})
+    if {_dep} is not set:
+        stop
+    if pkg_installed({_dep}) is true:
+        stop
+    return "package %{_dep}% (not installed)"
+
+# every unmet requirement of an installed package, nothing when satisfied
+local function pkg_missing(dir: String) -> Strings:
+    set {_lines::*} to file_lines("%{_dir}%/package.txt")
+    set {_requires::*} to split (manifest_value({_lines::*}, "requires") ? "") at ","
+    for {_entry} in {_requires::*}:
+        add requirement_missing({_entry}) to {_missing::*}
+    set {_packages::*} to split (manifest_value({_lines::*}, "packages") ? "") at ","
+    for {_entry} in {_packages::*}:
+        add pkg_dep_missing({_entry}) to {_missing::*}
+    return {_missing::*}
+
+# info row for one manifest entry: "  ok: ..." or "  missing: ..."
+local function requirement_status(entry: String) -> String:
+    set {_entry} to trim({_entry})
+    if {_entry} is not set:
+        stop
+    set {_unmet} to requirement_missing({_entry})
+    if {_unmet} is set:
+        return "  missing: %{_unmet}%"
+    return "  ok: %{_entry}%"
+
+local function pkg_dep_status(entry: String) -> String:
+    set {_entry} to trim({_entry})
+    if {_entry} is not set:
+        stop
+    set {_unmet} to pkg_dep_missing({_entry})
+    if {_unmet} is set:
+        return "  missing: %{_unmet}%"
+    return "  ok: %{_entry}%"
+
+# auto-installs url dependencies before the requirement check runs
+local function pkg_install_deps(dir: String, depth: Integer):
+    set {_lines::*} to file_lines("%{_dir}%/package.txt")
+    set {_packages} to manifest_value({_lines::*}, "packages")
+    if {_packages} is not set:
+        stop
+    for {_entry} in split {_packages} at ",":
+        pkg_install_dep(trim({_entry}) ? "", {_depth})
+
+local function pkg_install_dep(entry: String, depth: Integer):
+    if {_entry} does not contain "://":
+        stop
+    if pkg_by_origin({_entry}) is set:
+        stop
+    set {_dep} to pkg_name({_entry})
+    if {_dep} is not set:
+        stop
+    if pkg_installed({_dep}) is true:
+        stop
+    set {_installed} to pkg_install({_entry}, {_depth} + 1)
+    if {_installed} is set:
+        stop
+    set {_reason} to pkg_error() ? "failed"
+    send "package dependency %{_entry}%: %{_reason}%" to console
+
+# downloads, extracts and registers one package; unmet requirements leave it
+# installed disabled (-<name>). returns the final name, or nothing with the
+# failure reason readable via pkg_error()
+local function pkg_install(url: String, depth: Integer) -> String:
+    if {_depth} > 5:
+        pkg_fail("package dependencies nested too deep")
+        stop
+    set {_name} to pkg_name({_url})
+    if {_name} is not set:
+        pkg_fail("cannot derive a package name from %{_url}%")
+        stop
+    if pkg_installed({_name}) is true:
+        pkg_fail("package %{_name}% is already installed")
+        stop
+    set {_zip} to pkg_zip_url({_url})
+    set {_bytes} to http_get({_zip})
+    if {_bytes} is not set:
+        pkg_fail("download failed for %{_zip}%")
+        stop
+    set {_dest} to pkg_dir({_name})
+    dir_create({_dest})
+    zip_extract({_bytes}, {_dest})
+    # the manifest name wins over the url-derived one
+    set {_manifest} to manifest_value(file_lines("%{_dest}%/package.txt"), "name")
+    set {_rename} to pkg_name({_manifest} ? "")
+    if all:
+        {_rename} is set
+        {_rename} is not {_name}
+    then:
+        if pkg_installed({_rename}) is true:
+            dir_delete({_dest})
+            pkg_fail("package %{_rename}% is already installed")
+            stop
+        dir_rename({_dest}, pkg_dir({_rename}))
+        set {_name} to {_rename}
+        set {_dest} to pkg_dir({_name})
+    pkg_install_deps({_dest}, {_depth})
+    file_append_line("%{_dest}%/package.txt", "origin: %{_url}%")
+    if pkg_missing({_dest}) is set:
+        dir_rename({_dest}, pkg_disabled_dir({_name}))
+    return {_name}
+
+command /package <effect: text> [<pkg: text>]:
+    trigger:
+        if {_effect} is "list":
+            set {_packages::*} to pkg_list()
+            if {_packages::*} is not set:
+                send "no packages installed"
+                stop
+            for {_package} in {_packages::*}:
+                add pkg_display({_package}) to {_display::*}
+            send "installed packages (%size of {_display::*}%): %{_display::*}%"
+            stop
+        set {_name} to pkg_name({_pkg} ? "")
+        if {_name} is not set:
+            send "usage: /package (install <git url>|remove <name>|enable <name>|disable <name>|info <name>|list)"
+            stop
+        if {_effect} is "install":
+            send "installing from %{_pkg}%..."
+            set {_installed} to pkg_install({_pkg}, 0)
+            if {_installed} is not set:
+                send pkg_error() ? "install failed"
+                stop
+            set {_disabled} to pkg_disabled_dir({_installed})
+            if dir_exists({_disabled}) is true:
+                send "installed %{_installed}% disabled, missing: %pkg_missing({_disabled})%"
+                send "resolve the requirements, then run /package enable %{_installed}%"
+                stop
+            send "installed %{_installed}% into scripts/packages/ - run /sk reload scripts to load it"
+            stop
+        else if {_effect} is "remove":
+            set {_dest} to pkg_dir({_name})
+            if dir_exists({_dest}) = false:
+                set {_dest} to pkg_disabled_dir({_name})
+            if dir_exists({_dest}) = false:
+                send "package %{_name}% is not installed"
+                stop
+            dir_delete({_dest})
+            send "removed %{_name}% - run /sk reload scripts to unload it"
+            stop
+        else if {_effect} is "enable":
+            set {_from} to pkg_disabled_dir({_name})
+            if dir_exists({_from}) = false:
+                if dir_exists(pkg_dir({_name})) is true:
+                    send "package %{_name}% is already enabled"
+                    stop
+                send "package %{_name}% is not installed"
+                stop
+            set {_missing::*} to pkg_missing({_from})
+            if {_missing::*} is set:
+                send "cannot enable %{_name}%, missing: %{_missing::*}%"
+                stop
+            dir_rename({_from}, pkg_dir({_name}))
+            send "enabled %{_name}% - run /sk reload scripts to load it"
+            stop
+        else if {_effect} is "disable":
+            if dir_exists(pkg_disabled_dir({_name})) is true:
+                send "package %{_name}% is already disabled"
+                stop
+            if dir_exists(pkg_dir({_name})) = false:
+                send "package %{_name}% is not installed"
+                stop
+            dir_rename(pkg_dir({_name}), pkg_disabled_dir({_name}))
+            send "disabled %{_name}% - run /sk reload scripts to unload it"
+            stop
+        else if {_effect} is "info":
+            set {_dir} to pkg_dir({_name})
+            set {_state} to ""
+            if dir_exists({_dir}) = false:
+                set {_dir} to pkg_disabled_dir({_name})
+                set {_state} to " (disabled)"
+            if dir_exists({_dir}) = false:
+                send "package %{_name}% is not installed"
+                stop
+            set {_lines::*} to file_lines("%{_dir}%/package.txt")
+            set {_title} to manifest_value({_lines::*}, "name") ? {_name}
+            send "package: %{_title}%%{_state}%"
+            set {_version} to manifest_value({_lines::*}, "version")
+            if {_version} is set:
+                send "version: %{_version}%"
+            set {_description} to manifest_value({_lines::*}, "description")
+            if {_description} is set:
+                send "description: %{_description}%"
+            set {_origin} to manifest_value({_lines::*}, "origin")
+            if {_origin} is set:
+                send "origin: %{_origin}%"
+            set {_requires} to manifest_value({_lines::*}, "requires")
+            if {_requires} is set:
+                send "requires:"
+                for {_entry} in split {_requires} at ",":
+                    send requirement_status({_entry}) ? "  ?"
+            set {_packages} to manifest_value({_lines::*}, "packages")
+            if {_packages} is set:
+                send "packages:"
+                for {_entry} in split {_packages} at ",":
+                    send pkg_dep_status({_entry}) ? "  ?"
+            stop
+        send "usage: /package (install <git url>|remove <name>|enable <name>|disable <name>|info <name>|list)"
