@@ -407,13 +407,36 @@ local function pkg_update(name: String) -> String:
         return "updated %{_name}%%{_version}% disabled, missing: %pkg_missing(pkg_disabled_dir({_name}))%"
     return "updated %{_name}%%{_version}% - run /sk reload scripts to load it"
 
-# tab completion
+# check
 
 # folder name without the leading disabled marker
 local function pkg_bare(folder: String) -> String:
     if {_folder} does not start with "-":
         return {_folder}
     return sub({_folder}, 2)
+
+# one status line per installed package: flags enabled packages whose
+# requirements have since broken (red), and disabled ones now satisfiable
+# (green), so /package check surfaces drift since install time
+local function pkg_check_line(folder: String) -> String:
+    set {_name} to pkg_bare({_folder})
+    set {_disabled} to whether {_folder} starts with "-"
+    set {_dir} to pkg_dir({_name})
+    if {_disabled} is true:
+        set {_dir} to pkg_disabled_dir({_name})
+    set {_missing::*} to pkg_missing({_dir})
+    if all:
+        {_disabled} is true
+        {_missing::*} is not set
+    then:
+        return "<#55ff55>ready<#dddddd>: %{_name}% - requirements met, run /package enable %{_name}%"
+    if {_disabled} is true:
+        return "disabled: %{_name}% - missing: %{_missing::*}%"
+    if {_missing::*} is set:
+        return "<#ff5555>broken<#dddddd>: %{_name}% - missing: %{_missing::*}%"
+    return "ok: %{_name}%"
+
+# tab completion
 
 # bare names of installed packages a subcommand can act on: enable only
 # offers disabled packages, disable only enabled ones, the rest offer all
@@ -434,7 +457,7 @@ local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
 # everything after "package " in the buffer
 local function pkg_tab(rest: String) -> Strings:
     if {_rest} does not contain " ":
-        return pkg_tab_filter(("install", "update", "remove", "enable", "disable", "info" and "list"), {_rest})
+        return pkg_tab_filter(("install", "update", "remove", "enable", "disable", "info", "list" and "check"), {_rest})
     set {_sub} to first element of split {_rest} at " "
     if {_sub} is not "update", "remove", "enable", "disable" or "info":
         stop
@@ -466,9 +489,18 @@ command /package <effect: text> [<pkg: text>]:
             set {_display::*} to {_packages::*} transformed with [pkg_display(input)]
             pkg_msg(sender, "installed packages (%size of {_display::*}%): %{_display::*}%")
             stop
+        if {_effect} is "check":
+            set {_folders::*} to pkg_list()
+            if {_folders::*} is not set:
+                pkg_msg(sender, "no packages installed")
+                stop
+            pkg_msg(sender, "checking %size of {_folders::*}% package(s)...")
+            for {_folder} in {_folders::*}:
+                pkg_msg(sender, pkg_check_line({_folder}))
+            stop
         set {_name} to pkg_name({_pkg} ? "")
         if {_name} is not set:
-            pkg_msg(sender, "usage: /package (install <git url>|update <name>|remove <name>|enable <name>|disable <name>|info <name>|list)")
+            pkg_msg(sender, "usage: /package (install <git url>|update <name>|remove <name>|enable <name>|disable <name>|info <name>|list|check)")
             stop
         if {_effect} is "install":
             pkg_msg(sender, "installing from %{_pkg}%...")
@@ -555,4 +587,4 @@ command /package <effect: text> [<pkg: text>]:
                 for {_entry} in split {_packages} at ",":
                     pkg_msg(sender, pkg_dep_status({_entry}) ? "  ?")
             stop
-        pkg_msg(sender, "usage: /package (install <git url>|update <name>|remove <name>|enable <name>|disable <name>|info <name>|list)")
+        pkg_msg(sender, "usage: /package (install <git url>|update <name>|remove <name>|enable <name>|disable <name>|info <name>|list|check)")
