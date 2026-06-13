@@ -11,13 +11,16 @@ curl -o plugins/Skript/scripts/package.sk https://raw.githubusercontent.com/mibe
 ## Use
 
 ```
-/package install <git url>
+/package install <git url>[@version]
 /package (update|remove|enable|disable|info) <name>
 /package (list|check|outdated|awesome)
 ```
 
 Packages are installed into `scripts/packages/`. Browse available packages at
 [awesome-pacskage](https://github.com/miberss/awesome-pacskage).
+
+Append `@version` to an install url to pin a specific tag, branch, or commit
+instead of the default branch.
 
 ## Manifest
 

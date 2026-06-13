@@ -46,8 +46,25 @@ local function trim(text: String) -> String:
 local function first_word(text: String) -> String:
     return first element of (split {_text} at " ")
 
-# strips decoration from a repo link: trailing slash, .git suffix
+# an optional @ref pinned to an install link: a tag, branch, or commit to
+# fetch instead of the default branch, e.g. .../repo@v1.2.0. only an @ in the
+# final path segment counts, so a user@host credential earlier in the url is
+# left untouched
+local function pkg_ref(url: String) -> String:
+    set {_last} to last element of (split {_url} at "/")
+    if {_last} does not contain "@":
+        stop
+    set {_ref} to trim(last element of (split {_last} at "@"))
+    if {_ref} is not set:
+        stop
+    return {_ref}
+
+# strips decoration from a repo link: an @ref pin (read separately by
+# pkg_ref), a trailing slash, a .git suffix
 local function repo_url(url: String) -> String:
+    set {_ref} to pkg_ref({_url})
+    if {_ref} is set:
+        set {_url} to the first (length of {_url} - length of {_ref} - 1) characters of {_url}
     if {_url} ends with "/":
         set {_url} to the first (length of {_url} - 1) characters of {_url}
     if {_url} ends with ".git":
@@ -67,11 +84,13 @@ local function pkg_name(url: String) -> String:
         stop
     return {_name}
 
-# turns a repo link into an archive link, direct .zip links pass through
+# turns a repo link into an archive link for its pinned @ref, or the default
+# branch (HEAD) when none is given; direct .zip links pass through unchanged
 local function pkg_zip_url(url: String) -> String:
     if {_url} ends with ".zip":
         return {_url}
-    return "%repo_url({_url})%/archive/HEAD.zip"
+    set {_ref} to (pkg_ref({_url}) ? "HEAD")
+    return "%repo_url({_url})%/archive/%{_ref}%.zip"
 
 local function pkg_root() -> String:
     return "%scripts_root()%/packages"
@@ -526,7 +545,7 @@ local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
 # hint. tab completion and the usage line are both derived from this, so a
 # new command only needs an entry here plus its branch in the trigger
 local function pkg_commands() -> Strings:
-    return "install <git url>", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated" and "awesome"
+    return "install <git url>[@version]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated" and "awesome"
 
 # just the subcommand keywords (the first word of each entry)
 local function pkg_command_names() -> Strings:
