@@ -67,6 +67,10 @@ local function pkg_dir(name: String) -> String:
 local function pkg_disabled_dir(name: String) -> String:
     return "%pkg_root()%/-%{_name}%"
 
+# scratch space outside scripts/ so a half-written download never loads
+local function pkg_tmp_dir(name: String) -> String:
+    return Path.of("%scripts_root()%/../.pacskage-tmp-%{_name}%").normalize().toString()
+
 local function pkg_display(name: String) -> String:
     if {_name} does not start with "-":
         return {_name}
@@ -353,6 +357,56 @@ local function pkg_install(url: String, depth: Integer) -> String:
         dir_rename({_dest}, pkg_disabled_dir({_name}))
     return {_name}
 
+# re-downloads a package from its recorded origin and replaces the
+# installed copy unless it already carries the newest version. returns a
+# status message, or nothing with the reason readable via pkg_error()
+local function pkg_update(name: String) -> String:
+    set {_dir} to pkg_dir({_name})
+    if dir_exists({_dir}) = false:
+        set {_dir} to pkg_disabled_dir({_name})
+    if dir_exists({_dir}) = false:
+        pkg_fail("package %{_name}% is not installed")
+        stop
+    set {_lines::*} to file_lines("%{_dir}%/package.txt")
+    set {_origin} to manifest_value({_lines::*}, "origin")
+    if {_origin} is not set:
+        pkg_fail("package %{_name}% has no origin recorded")
+        stop
+    set {_bytes} to http_get(pkg_zip_url({_origin}))
+    if {_bytes} is not set:
+        pkg_fail("download failed for %pkg_zip_url({_origin})%")
+        stop
+    set {_tmp} to pkg_tmp_dir({_name})
+    if dir_exists({_tmp}) is true:
+        dir_delete({_tmp})
+    dir_create({_tmp})
+    zip_extract({_bytes}, {_tmp})
+    if Files.list(Path.of({_tmp})).findAny().isPresent() is false:
+        dir_delete({_tmp})
+        pkg_fail("downloaded archive from %{_origin}% is empty")
+        stop
+    set {_current} to manifest_value({_lines::*}, "version")
+    set {_remote} to manifest_value(file_lines("%{_tmp}%/package.txt"), "version")
+    if all:
+        {_current} is set
+        {_remote} is set
+        version_at_least({_current}, {_remote}) is true
+    then:
+        dir_delete({_tmp})
+        return "package %{_name}% is already up to date (%{_current}%)"
+    set {_dest} to pkg_dir({_name})
+    dir_delete({_dir})
+    dir_rename({_tmp}, {_dest})
+    pkg_install_deps({_dest}, 0)
+    file_append_line("%{_dest}%/package.txt", "origin: %{_origin}%")
+    set {_version} to ""
+    if {_remote} is set:
+        set {_version} to " to %{_remote}%"
+    if pkg_missing({_dest}) is set:
+        dir_rename({_dest}, pkg_disabled_dir({_name}))
+        return "updated %{_name}%%{_version}% disabled, missing: %pkg_missing(pkg_disabled_dir({_name}))%"
+    return "updated %{_name}%%{_version}% - run /sk reload scripts to load it"
+
 # tab completion
 
 # folder name without the leading disabled marker
@@ -380,9 +434,9 @@ local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
 # everything after "package " in the buffer
 local function pkg_tab(rest: String) -> Strings:
     if {_rest} does not contain " ":
-        return pkg_tab_filter(("install", "remove", "enable", "disable", "info" and "list"), {_rest})
+        return pkg_tab_filter(("install", "update", "remove", "enable", "disable", "info" and "list"), {_rest})
     set {_sub} to first element of split {_rest} at " "
-    if {_sub} is not "remove", "enable", "disable" or "info":
+    if {_sub} is not "update", "remove", "enable", "disable" or "info":
         stop
     set {_partial} to sub({_rest}, length of {_sub} + 2)
     return pkg_tab_filter(pkg_tab_names({_sub}), {_partial} ? "")
@@ -414,7 +468,7 @@ command /package <effect: text> [<pkg: text>]:
             stop
         set {_name} to pkg_name({_pkg} ? "")
         if {_name} is not set:
-            pkg_msg(sender, "usage: /package (install <git url>|remove <name>|enable <name>|disable <name>|info <name>|list)")
+            pkg_msg(sender, "usage: /package (install <git url>|update <name>|remove <name>|enable <name>|disable <name>|info <name>|list)")
             stop
         if {_effect} is "install":
             pkg_msg(sender, "installing from %{_pkg}%...")
@@ -428,6 +482,11 @@ command /package <effect: text> [<pkg: text>]:
                 pkg_msg(sender, "resolve the requirements, then run /package enable %{_installed}%")
                 stop
             pkg_msg(sender, "installed %{_installed}% into scripts/packages/ - run /sk reload scripts to load it")
+            stop
+        else if {_effect} is "update":
+            pkg_msg(sender, "updating %{_name}% from its origin...")
+            set {_status} to pkg_update({_name})
+            pkg_msg(sender, {_status} ? pkg_error() ? "update failed")
             stop
         else if {_effect} is "remove":
             set {_dest} to pkg_dir({_name})
@@ -496,4 +555,4 @@ command /package <effect: text> [<pkg: text>]:
                 for {_entry} in split {_packages} at ",":
                     pkg_msg(sender, pkg_dep_status({_entry}) ? "  ?")
             stop
-        pkg_msg(sender, "usage: /package (install <git url>|remove <name>|enable <name>|disable <name>|info <name>|list)")
+        pkg_msg(sender, "usage: /package (install <git url>|update <name>|remove <name>|enable <name>|disable <name>|info <name>|list)")
