@@ -113,6 +113,11 @@ local function requirement_min(entry: String) -> String:
         stop
     return trim(last element of split {_entry} at ">=")
 
+# all command/console output goes through here: [pacskage] prefix,
+# orange name in darker orange brackets, message in soft gray
+local function pkg_msg(to: Object, message: String):
+    send "<#cc5500>[<#ff8800>pacskage<#cc5500>]<reset> <#dddddd>%{_message}%" to {_to}
+
 local function pkg_fail(message: String):
     set {-package::error} to {_message}
 
@@ -300,7 +305,7 @@ local function pkg_install_dep(entry: String, depth: Integer):
     if {_installed} is set:
         stop
     set {_reason} to pkg_error() ? "failed"
-    send "package dependency %{_entry}%: %{_reason}%" to console
+    pkg_msg(console, "package dependency %{_entry}%: %{_reason}%")
 
 # downloads, extracts and registers one package; unmet requirements leave it
 # installed disabled (-<name>). returns the final name, or nothing with the
@@ -350,63 +355,63 @@ command /package <effect: text> [<pkg: text>]:
         if {_effect} is "list":
             set {_packages::*} to pkg_list()
             if {_packages::*} is not set:
-                send "no packages installed"
+                pkg_msg(sender, "no packages installed")
                 stop
             for {_package} in {_packages::*}:
                 add pkg_display({_package}) to {_display::*}
-            send "installed packages (%size of {_display::*}%): %{_display::*}%"
+            pkg_msg(sender, "installed packages (%size of {_display::*}%): %{_display::*}%")
             stop
         set {_name} to pkg_name({_pkg} ? "")
         if {_name} is not set:
-            send "usage: /package (install <git url>|remove <name>|enable <name>|disable <name>|info <name>|list)"
+            pkg_msg(sender, "usage: /package (install <git url>|remove <name>|enable <name>|disable <name>|info <name>|list)")
             stop
         if {_effect} is "install":
-            send "installing from %{_pkg}%..."
+            pkg_msg(sender, "installing from %{_pkg}%...")
             set {_installed} to pkg_install({_pkg}, 0)
             if {_installed} is not set:
-                send pkg_error() ? "install failed"
+                pkg_msg(sender, pkg_error() ? "install failed")
                 stop
             set {_disabled} to pkg_disabled_dir({_installed})
             if dir_exists({_disabled}) is true:
-                send "installed %{_installed}% disabled, missing: %pkg_missing({_disabled})%"
-                send "resolve the requirements, then run /package enable %{_installed}%"
+                pkg_msg(sender, "installed %{_installed}% disabled, missing: %pkg_missing({_disabled})%")
+                pkg_msg(sender, "resolve the requirements, then run /package enable %{_installed}%")
                 stop
-            send "installed %{_installed}% into scripts/packages/ - run /sk reload scripts to load it"
+            pkg_msg(sender, "installed %{_installed}% into scripts/packages/ - run /sk reload scripts to load it")
             stop
         else if {_effect} is "remove":
             set {_dest} to pkg_dir({_name})
             if dir_exists({_dest}) = false:
                 set {_dest} to pkg_disabled_dir({_name})
             if dir_exists({_dest}) = false:
-                send "package %{_name}% is not installed"
+                pkg_msg(sender, "package %{_name}% is not installed")
                 stop
             dir_delete({_dest})
-            send "removed %{_name}% - run /sk reload scripts to unload it"
+            pkg_msg(sender, "removed %{_name}% - run /sk reload scripts to unload it")
             stop
         else if {_effect} is "enable":
             set {_from} to pkg_disabled_dir({_name})
             if dir_exists({_from}) = false:
                 if dir_exists(pkg_dir({_name})) is true:
-                    send "package %{_name}% is already enabled"
+                    pkg_msg(sender, "package %{_name}% is already enabled")
                     stop
-                send "package %{_name}% is not installed"
+                pkg_msg(sender, "package %{_name}% is not installed")
                 stop
             set {_missing::*} to pkg_missing({_from})
             if {_missing::*} is set:
-                send "cannot enable %{_name}%, missing: %{_missing::*}%"
+                pkg_msg(sender, "cannot enable %{_name}%, missing: %{_missing::*}%")
                 stop
             dir_rename({_from}, pkg_dir({_name}))
-            send "enabled %{_name}% - run /sk reload scripts to load it"
+            pkg_msg(sender, "enabled %{_name}% - run /sk reload scripts to load it")
             stop
         else if {_effect} is "disable":
             if dir_exists(pkg_disabled_dir({_name})) is true:
-                send "package %{_name}% is already disabled"
+                pkg_msg(sender, "package %{_name}% is already disabled")
                 stop
             if dir_exists(pkg_dir({_name})) = false:
-                send "package %{_name}% is not installed"
+                pkg_msg(sender, "package %{_name}% is not installed")
                 stop
             dir_rename(pkg_dir({_name}), pkg_disabled_dir({_name}))
-            send "disabled %{_name}% - run /sk reload scripts to unload it"
+            pkg_msg(sender, "disabled %{_name}% - run /sk reload scripts to unload it")
             stop
         else if {_effect} is "info":
             set {_dir} to pkg_dir({_name})
@@ -415,29 +420,29 @@ command /package <effect: text> [<pkg: text>]:
                 set {_dir} to pkg_disabled_dir({_name})
                 set {_state} to " (disabled)"
             if dir_exists({_dir}) = false:
-                send "package %{_name}% is not installed"
+                pkg_msg(sender, "package %{_name}% is not installed")
                 stop
             set {_lines::*} to file_lines("%{_dir}%/package.txt")
             set {_title} to manifest_value({_lines::*}, "name") ? {_name}
-            send "package: %{_title}%%{_state}%"
+            pkg_msg(sender, "package: %{_title}%%{_state}%")
             set {_version} to manifest_value({_lines::*}, "version")
             if {_version} is set:
-                send "version: %{_version}%"
+                pkg_msg(sender, "version: %{_version}%")
             set {_description} to manifest_value({_lines::*}, "description")
             if {_description} is set:
-                send "description: %{_description}%"
+                pkg_msg(sender, "description: %{_description}%")
             set {_origin} to manifest_value({_lines::*}, "origin")
             if {_origin} is set:
-                send "origin: %{_origin}%"
+                pkg_msg(sender, "origin: %{_origin}%")
             set {_requires} to manifest_value({_lines::*}, "requires")
             if {_requires} is set:
-                send "requires:"
+                pkg_msg(sender, "requires:")
                 for {_entry} in split {_requires} at ",":
-                    send requirement_status({_entry}) ? "  ?"
+                    pkg_msg(sender, requirement_status({_entry}) ? "  ?")
             set {_packages} to manifest_value({_lines::*}, "packages")
             if {_packages} is set:
-                send "packages:"
+                pkg_msg(sender, "packages:")
                 for {_entry} in split {_packages} at ",":
-                    send pkg_dep_status({_entry}) ? "  ?"
+                    pkg_msg(sender, pkg_dep_status({_entry}) ? "  ?")
             stop
-        send "usage: /package (install <git url>|remove <name>|enable <name>|disable <name>|info <name>|list)"
+        pkg_msg(sender, "usage: /package (install <git url>|remove <name>|enable <name>|disable <name>|info <name>|list)")
