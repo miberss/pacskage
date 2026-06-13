@@ -71,10 +71,15 @@ local function pkg_disabled_dir(name: String) -> String:
 local function pkg_tmp_dir(name: String) -> String:
     return Path.of("%scripts_root()%/../.pacskage-tmp-%{_name}%").normalize().toString()
 
-local function pkg_display(name: String) -> String:
-    if {_name} does not start with "-":
-        return {_name}
-    return "%sub({_name}, 2)% (disabled)"
+# bare name with " v<version>" inline (if any) and a (disabled) marker
+local function pkg_display(folder: String) -> String:
+    set {_version} to manifest_value(file_lines("%pkg_root()%/%{_folder}%/package.txt"), "version")
+    set {_suffix} to ""
+    if {_version} is set:
+        set {_suffix} to " v%{_version}%"
+    if {_folder} does not start with "-":
+        return "%{_folder}%%{_suffix}%"
+    return "%sub({_folder}, 2)%%{_suffix}% (disabled)"
 
 # drops the root folder archives wrap their content in (repo-HEAD/...)
 local function strip_root(path: String) -> String:
@@ -405,7 +410,7 @@ local function pkg_update(name: String) -> String:
     if pkg_missing({_dest}) is set:
         dir_rename({_dest}, pkg_disabled_dir({_name}))
         return "updated %{_name}%%{_version}% disabled, missing: %pkg_missing(pkg_disabled_dir({_name}))%"
-    return "updated %{_name}%%{_version}% - run /sk reload scripts to load it"
+    return "updated %{_name}%%{_version}% - /sk reload scripts to apply"
 
 # check
 
@@ -500,7 +505,7 @@ command /package <effect: text> [<pkg: text>]:
             stop
         set {_name} to pkg_name({_pkg} ? "")
         if {_name} is not set:
-            pkg_msg(sender, "usage: /package (install <git url>|update <name>|remove <name>|enable <name>|disable <name>|info <name>|list|check)")
+            pkg_msg(sender, "usage: /package (install <git url>  |  update <name>  |  remove <name>  |  enable <name>  |  disable <name>  |  info <name>  |  list  |  check)")
             stop
         if {_effect} is "install":
             pkg_msg(sender, "installing from %{_pkg}%...")
@@ -513,7 +518,7 @@ command /package <effect: text> [<pkg: text>]:
                 pkg_msg(sender, "installed %{_installed}% disabled, missing: %pkg_missing({_disabled})%")
                 pkg_msg(sender, "resolve the requirements, then run /package enable %{_installed}%")
                 stop
-            pkg_msg(sender, "installed %{_installed}% into scripts/packages/ - run /sk reload scripts to load it")
+            pkg_msg(sender, "installed %{_installed}% - /sk reload scripts to apply")
             stop
         else if {_effect} is "update":
             pkg_msg(sender, "updating %{_name}% from its origin...")
@@ -528,7 +533,7 @@ command /package <effect: text> [<pkg: text>]:
                 pkg_msg(sender, "package %{_name}% is not installed")
                 stop
             dir_delete({_dest})
-            pkg_msg(sender, "removed %{_name}% - run /sk reload scripts to unload it")
+            pkg_msg(sender, "removed %{_name}% - /sk reload scripts to apply")
             stop
         else if {_effect} is "enable":
             set {_from} to pkg_disabled_dir({_name})
@@ -543,7 +548,7 @@ command /package <effect: text> [<pkg: text>]:
                 pkg_msg(sender, "cannot enable %{_name}%, missing: %{_missing::*}%")
                 stop
             dir_rename({_from}, pkg_dir({_name}))
-            pkg_msg(sender, "enabled %{_name}% - run /sk reload scripts to load it")
+            pkg_msg(sender, "enabled %{_name}% - /sk reload scripts to apply")
             stop
         else if {_effect} is "disable":
             if dir_exists(pkg_disabled_dir({_name})) is true:
@@ -553,7 +558,7 @@ command /package <effect: text> [<pkg: text>]:
                 pkg_msg(sender, "package %{_name}% is not installed")
                 stop
             dir_rename(pkg_dir({_name}), pkg_disabled_dir({_name}))
-            pkg_msg(sender, "disabled %{_name}% - run /sk reload scripts to unload it")
+            pkg_msg(sender, "disabled %{_name}% - /sk reload scripts to apply")
             stop
         else if {_effect} is "info":
             set {_dir} to pkg_dir({_name})
@@ -566,10 +571,11 @@ command /package <effect: text> [<pkg: text>]:
                 stop
             set {_lines::*} to file_lines("%{_dir}%/package.txt")
             set {_title} to manifest_value({_lines::*}, "name") ? {_name}
-            pkg_msg(sender, "package: %{_title}%%{_state}%")
             set {_version} to manifest_value({_lines::*}, "version")
+            set {_ver} to ""
             if {_version} is set:
-                pkg_msg(sender, "version: %{_version}%")
+                set {_ver} to " v%{_version}%"
+            pkg_msg(sender, "package: %{_title}%%{_ver}%%{_state}%")
             set {_description} to manifest_value({_lines::*}, "description")
             if {_description} is set:
                 pkg_msg(sender, "description: %{_description}%")

@@ -42,3 +42,7 @@ All fields are optional:
 `origin` is added automatically on install, so don't set it yourself. See
 [pacskage-example](https://github.com/miberss/pacskage-example) for a full
 example.
+
+## License
+
+[Unlicense](LICENSE) (public domain).
