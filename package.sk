@@ -9,14 +9,22 @@ import:
     java.nio.file.Files
     java.nio.file.Path
     java.nio.file.StandardOpenOption
+    java.util.ArrayList
     java.util.Comparator
     java.util.zip.ZipInputStream
     org.bukkit.Bukkit
+    org.bukkit.event.server.TabCompleteEvent
+
+# subtext of {_text} from {_start}, to the end of the string by default
+local function sub(text: String, start: Integer, end: Integer = -1) -> String:
+    if {_end} < 0:
+        set {_end} to length of {_text}
+    return subtext of {_text} from {_start} to {_end}
 
 # nothing comes back for blank input, so trimmed blanks read as absent
 local function trim(text: String) -> String:
     while {_text} starts with " ":
-        set {_text} to subtext of {_text} from 2 to length of {_text}
+        set {_text} to sub({_text}, 2)
     while {_text} ends with " ":
         set {_text} to the first (length of {_text} - 1) characters of {_text}
     if length of {_text} <= 0:
@@ -62,14 +70,14 @@ local function pkg_disabled_dir(name: String) -> String:
 local function pkg_display(name: String) -> String:
     if {_name} does not start with "-":
         return {_name}
-    return "%subtext of {_name} from 2 to length of {_name}% (disabled)"
+    return "%sub({_name}, 2)% (disabled)"
 
 # drops the root folder archives wrap their content in (repo-HEAD/...)
 local function strip_root(path: String) -> String:
     set {_slash} to first index of "/" in {_path}
     if {_slash} <= 0:
         stop
-    set {_relative} to subtext of {_path} from ({_slash} + 1) to length of {_path}
+    set {_relative} to sub({_path}, {_slash} + 1)
     if {_relative} is not set:
         stop
     return {_relative}
@@ -102,7 +110,7 @@ local function manifest_line_value(line: String, key: String) -> String:
         stop
     if {_line} does not start with "%{_key}%:":
         stop
-    return trim(subtext of {_line} from (length of {_key} + 2) to length of {_line})
+    return trim(sub({_line}, length of {_key} + 2))
 
 # one "requires" entry is a plugin name, optionally followed by >= version
 local function requirement_name(entry: String) -> String:
@@ -143,10 +151,8 @@ local function pkg_list() -> Strings:
     if dir_exists(pkg_root()) = false:
         stop
     set {_paths::*} to ...Files.list(Path.of(pkg_root())).sorted().toArray()
-    for {_path} in {_paths::*}:
-        if Files.isDirectory({_path}) is true:
-            add {_path}.getFileName().toString() to {_names::*}
-    return {_names::*}
+    set {_dirs::*} to {_paths::*} where [Files.isDirectory(input) is true]
+    return {_dirs::*} transformed with [input.getFileName().toString()]
 
 # deletes contents before their parent folders (deepest paths first)
 local function dir_delete(path: String):
@@ -258,10 +264,8 @@ local function pkg_dep_missing(entry: String) -> String:
 local function pkg_missing(dir: String) -> Strings:
     set {_lines::*} to file_lines("%{_dir}%/package.txt")
     set {_requires::*} to split (manifest_value({_lines::*}, "requires") ? "") at ","
-    set {_missing::*} to {_requires::*} transformed with [requirement_missing(input)]
     set {_packages::*} to split (manifest_value({_lines::*}, "packages") ? "") at ","
-    add {_packages::*} transformed with [pkg_dep_missing(input)] to {_missing::*}
-    return {_missing::*}
+    return ({_requires::*} transformed with [requirement_missing(input)]) and ({_packages::*} transformed with [pkg_dep_missing(input)])
 
 # info row for one manifest entry: "  ok: ..." or "  missing: ..."
 local function requirement_status(entry: String) -> String:
@@ -349,6 +353,54 @@ local function pkg_install(url: String, depth: Integer) -> String:
         dir_rename({_dest}, pkg_disabled_dir({_name}))
     return {_name}
 
+# tab completion
+
+# folder name without the leading disabled marker
+local function pkg_bare(folder: String) -> String:
+    if {_folder} does not start with "-":
+        return {_folder}
+    return sub({_folder}, 2)
+
+# bare names of installed packages a subcommand can act on: enable only
+# offers disabled packages, disable only enabled ones, the rest offer all
+local function pkg_tab_names(sub: String) -> Strings:
+    set {_folders::*} to pkg_list()
+    if {_sub} is "enable":
+        set {_folders::*} to {_folders::*} where [input starts with "-"]
+    else if {_sub} is "disable":
+        set {_folders::*} to {_folders::*} where [input does not start with "-"]
+    return {_folders::*} transformed with [pkg_bare(input)]
+
+local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
+    if length of {_partial} <= 0:
+        return {_options::*}
+    return {_options::*} where [input starts with {_partial}]
+
+# candidates for the /package argument currently being typed, given
+# everything after "package " in the buffer
+local function pkg_tab(rest: String) -> Strings:
+    if {_rest} does not contain " ":
+        return pkg_tab_filter(("install", "remove", "enable", "disable", "info" and "list"), {_rest})
+    set {_sub} to first element of split {_rest} at " "
+    if {_sub} is not "remove", "enable", "disable" or "info":
+        stop
+    set {_partial} to sub({_rest}, length of {_sub} + 2)
+    return pkg_tab_filter(pkg_tab_names({_sub}), {_partial} ? "")
+
+on TabCompleteEvent:
+    set {_buffer} to event.getBuffer()
+    if {_buffer} starts with "/":
+        set {_buffer} to sub({_buffer}, 2)
+    if {_buffer} does not start with "package ":
+        stop
+    set {_rest} to sub({_buffer}, 9)
+    # built element-wise: handing the whole array to a varargs method
+    # would land in the single-argument overload and corrupt the list
+    set {_list} to new ArrayList()
+    for {_completion} in pkg_tab({_rest} ? ""):
+        {_list}.add({_completion})
+    event.setCompletions({_list})
+
 command /package <effect: text> [<pkg: text>]:
     permission: console and ops
     trigger:
@@ -357,8 +409,7 @@ command /package <effect: text> [<pkg: text>]:
             if {_packages::*} is not set:
                 pkg_msg(sender, "no packages installed")
                 stop
-            for {_package} in {_packages::*}:
-                add pkg_display({_package}) to {_display::*}
+            set {_display::*} to {_packages::*} transformed with [pkg_display(input)]
             pkg_msg(sender, "installed packages (%size of {_display::*}%): %{_display::*}%")
             stop
         set {_name} to pkg_name({_pkg} ? "")
