@@ -238,7 +238,7 @@ local function pkg_by_origin(url: String) -> String:
 local function pkg_dep_missing(entry: String) -> String:
     set {_entry} to trim({_entry}) ? ""
     if all:
-        {_entry} contains "://":
+        {_entry} contains "://"
         pkg_by_origin({_entry}) is set
     then:
         stop
@@ -253,9 +253,9 @@ local function pkg_dep_missing(entry: String) -> String:
 local function pkg_missing(dir: String) -> Strings:
     set {_lines::*} to file_lines("%{_dir}%/package.txt")
     set {_requires::*} to split (manifest_value({_lines::*}, "requires") ? "") at ","
-    set {_require_missing::*} to {_requires::*} transformed with [requirement_missing({_entry})]
+    set {_missing::*} to {_requires::*} transformed with [requirement_missing(input)]
     set {_packages::*} to split (manifest_value({_lines::*}, "packages") ? "") at ","
-    set {_package_missing::*} to {_packages::*} transformed with [pkg_dep_missing({_entry})]
+    add {_packages::*} transformed with [pkg_dep_missing(input)] to {_missing::*}
     return {_missing::*}
 
 # info row for one manifest entry: "  ok: ..." or "  missing: ..."
