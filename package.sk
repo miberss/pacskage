@@ -15,6 +15,17 @@ import:
     org.bukkit.Bukkit
     org.bukkit.event.server.TabCompleteEvent
 
+# palette, referenced as {@name}. hex tags are written with ## so the
+# leading # is not read as the start of a comment in this section
+options:
+    c_bracket: <##cc5500>
+    c_brand: <##ff8800>
+    c_body: <##dddddd>
+    c_link: <##55aaff>
+    c_ok: <##55ff55>
+    c_warn: <##ffaa00>
+    c_error: <##ff5555>
+
 # subtext of {_text} from {_start}, to the end of the string by default
 local function sub(text: String, start: Integer, end: Integer = -1) -> String:
     if {_end} < 0:
@@ -71,15 +82,17 @@ local function pkg_disabled_dir(name: String) -> String:
 local function pkg_tmp_dir(name: String) -> String:
     return Path.of("%scripts_root()%/../.pacskage-tmp-%{_name}%").normalize().toString()
 
-# bare name with " v<version>" inline (if any) and a (disabled) marker
+# linked name with " v<version>" inline (if any) and a (disabled) marker
 local function pkg_display(folder: String) -> String:
-    set {_version} to manifest_value(file_lines("%pkg_root()%/%{_folder}%/package.txt"), "version")
+    set {_lines::*} to file_lines("%pkg_root()%/%{_folder}%/package.txt")
+    set {_origin} to manifest_value({_lines::*}, "origin")
+    set {_version} to manifest_value({_lines::*}, "version")
     set {_suffix} to ""
     if {_version} is set:
         set {_suffix} to " v%{_version}%"
     if {_folder} does not start with "-":
-        return "%{_folder}%%{_suffix}%"
-    return "%sub({_folder}, 2)%%{_suffix}% (disabled)"
+        return "%pkg_link({_folder}, {_origin})%%{_suffix}%"
+    return "%pkg_link(sub({_folder}, 2), {_origin})%%{_suffix}% (disabled)"
 
 # drops the root folder archives wrap their content in (repo-HEAD/...)
 local function strip_root(path: String) -> String:
@@ -133,7 +146,14 @@ local function requirement_min(entry: String) -> String:
 # all command/console output goes through here: [pacskage] prefix,
 # orange name in darker orange brackets, message in soft gray
 local function pkg_msg(to: Object, message: String):
-    send "<#cc5500>[<#ff8800>pacskage<#cc5500>]<reset> <#dddddd>%{_message}%" to {_to}
+    send formatted "{@c_bracket}[{@c_brand}pacskage{@c_bracket}]<reset> {@c_body}%{_message}%" to {_to}
+
+# a package name as a clickable, underlined link to its origin (opens the
+# repo in a browser); a plain colored name when no origin is recorded
+local function pkg_link(name: String, url: String) -> String:
+    if {_url} is not set:
+        return "{@c_link}%{_name}%{@c_body}"
+    return "<click:open_url:%{_url}%>{@c_link}<underlined>%{_name}%</underlined></click>{@c_body}"
 
 local function pkg_fail(message: String):
     set {-package::error} to {_message}
@@ -429,17 +449,51 @@ local function pkg_check_line(folder: String) -> String:
     set {_dir} to pkg_dir({_name})
     if {_disabled} is true:
         set {_dir} to pkg_disabled_dir({_name})
+    set {_link} to pkg_link({_name}, manifest_value(file_lines("%{_dir}%/package.txt"), "origin"))
     set {_missing::*} to pkg_missing({_dir})
     if all:
         {_disabled} is true
         {_missing::*} is not set
     then:
-        return "<#55ff55>ready<#dddddd>: %{_name}% - requirements met, run /package enable %{_name}%"
+        return "{@c_ok}ready{@c_body}: %{_link}% - requirements met, run /package enable %{_name}%"
     if {_disabled} is true:
-        return "disabled: %{_name}% - missing: %{_missing::*}%"
+        return "disabled: %{_link}% - missing: %{_missing::*}%"
     if {_missing::*} is set:
-        return "<#ff5555>broken<#dddddd>: %{_name}% - missing: %{_missing::*}%"
-    return "ok: %{_name}%"
+        return "{@c_error}broken{@c_body}: %{_link}% - missing: %{_missing::*}%"
+    return "ok: %{_link}%"
+
+# one status line per installed package comparing its recorded version against
+# the one its origin archive currently declares, without touching the install.
+# extracts to a scratch dir only to read the remote manifest, then cleans up
+local function pkg_outdated_line(folder: String) -> String:
+    set {_name} to pkg_bare({_folder})
+    set {_dir} to pkg_dir({_name})
+    if {_folder} starts with "-":
+        set {_dir} to pkg_disabled_dir({_name})
+    set {_lines::*} to file_lines("%{_dir}%/package.txt")
+    set {_origin} to manifest_value({_lines::*}, "origin")
+    if {_origin} is not set:
+        return "no origin: %{_name}% - cannot check"
+    set {_link} to pkg_link({_name}, {_origin})
+    set {_current} to manifest_value({_lines::*}, "version")
+    set {_bytes} to http_get(pkg_zip_url({_origin}))
+    if {_bytes} is not set:
+        return "{@c_error}failed{@c_body}: %{_link}% - could not download from origin"
+    set {_tmp} to pkg_tmp_dir({_name})
+    if dir_exists({_tmp}) is true:
+        dir_delete({_tmp})
+    dir_create({_tmp})
+    zip_extract({_bytes}, {_tmp})
+    set {_remote} to manifest_value(file_lines("%{_tmp}%/package.txt"), "version")
+    dir_delete({_tmp})
+    if any:
+        {_current} is not set
+        {_remote} is not set
+    then:
+        return "unknown: %{_link}% - no version to compare"
+    if version_at_least({_current}, {_remote}) is true:
+        return "ok: %{_link}% (%{_current}%)"
+    return "{@c_warn}outdated{@c_body}: %{_link}% (%{_current}% -> %{_remote}%)"
 
 # tab completion
 
@@ -462,7 +516,7 @@ local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
 # everything after "package " in the buffer
 local function pkg_tab(rest: String) -> Strings:
     if {_rest} does not contain " ":
-        return pkg_tab_filter(("install", "update", "remove", "enable", "disable", "info", "list" and "check"), {_rest})
+        return pkg_tab_filter(("install", "update", "remove", "enable", "disable", "info", "list", "check" and "outdated"), {_rest})
     set {_sub} to first element of split {_rest} at " "
     if {_sub} is not "update", "remove", "enable", "disable" or "info":
         stop
@@ -503,9 +557,18 @@ command /package <effect: text> [<pkg: text>]:
             for {_folder} in {_folders::*}:
                 pkg_msg(sender, pkg_check_line({_folder}))
             stop
+        if {_effect} is "outdated":
+            set {_folders::*} to pkg_list()
+            if {_folders::*} is not set:
+                pkg_msg(sender, "no packages installed")
+                stop
+            pkg_msg(sender, "checking %size of {_folders::*}% package(s) for updates...")
+            for {_folder} in {_folders::*}:
+                pkg_msg(sender, pkg_outdated_line({_folder}))
+            stop
         set {_name} to pkg_name({_pkg} ? "")
         if {_name} is not set:
-            pkg_msg(sender, "usage: /package (install <git url>  |  update <name>  |  remove <name>  |  enable <name>  |  disable <name>  |  info <name>  |  list  |  check)")
+            pkg_msg(sender, "usage: /package (install <git url>  |  update <name>  |  remove <name>  |  enable <name>  |  disable <name>  |  info <name>  |  list  |  check  |  outdated)")
             stop
         if {_effect} is "install":
             pkg_msg(sender, "installing from %{_pkg}%...")
@@ -570,18 +633,18 @@ command /package <effect: text> [<pkg: text>]:
                 pkg_msg(sender, "package %{_name}% is not installed")
                 stop
             set {_lines::*} to file_lines("%{_dir}%/package.txt")
+            set {_origin} to manifest_value({_lines::*}, "origin")
             set {_title} to manifest_value({_lines::*}, "name") ? {_name}
             set {_version} to manifest_value({_lines::*}, "version")
             set {_ver} to ""
             if {_version} is set:
                 set {_ver} to " v%{_version}%"
-            pkg_msg(sender, "package: %{_title}%%{_ver}%%{_state}%")
+            pkg_msg(sender, "package: %pkg_link({_title}, {_origin})%%{_ver}%%{_state}%")
             set {_description} to manifest_value({_lines::*}, "description")
             if {_description} is set:
                 pkg_msg(sender, "description: %{_description}%")
-            set {_origin} to manifest_value({_lines::*}, "origin")
             if {_origin} is set:
-                pkg_msg(sender, "origin: %{_origin}%")
+                pkg_msg(sender, "origin: %pkg_link({_origin}, {_origin})%")
             set {_requires} to manifest_value({_lines::*}, "requires")
             if {_requires} is set:
                 pkg_msg(sender, "requires:")
@@ -593,4 +656,4 @@ command /package <effect: text> [<pkg: text>]:
                 for {_entry} in split {_packages} at ",":
                     pkg_msg(sender, pkg_dep_status({_entry}) ? "  ?")
             stop
-        pkg_msg(sender, "usage: /package (install <git url>|update <name>|remove <name>|enable <name>|disable <name>|info <name>|list|check)")
+        pkg_msg(sender, "usage: /package (install <git url>|update <name>|remove <name>|enable <name>|disable <name>|info <name>|list|check|outdated)")
