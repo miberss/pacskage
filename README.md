@@ -16,7 +16,8 @@ curl -o plugins/Skript/scripts/package.sk https://raw.githubusercontent.com/mibe
 /package (list|check)
 ```
 
-Packages are installed into `scripts/packages/`.
+Packages are installed into `scripts/packages/`. Browse available packages at
+[awesome-pacskage](https://github.com/miberss/awesome-pacskage).
 
 ## Manifest
 
