@@ -42,6 +42,10 @@ local function trim(text: String) -> String:
         stop
     return {_text}
 
+# first space-delimited word of a string
+local function first_word(text: String) -> String:
+    return first element of (split {_text} at " ")
+
 # strips decoration from a repo link: trailing slash, .git suffix
 local function repo_url(url: String) -> String:
     if {_url} ends with "/":
@@ -52,7 +56,7 @@ local function repo_url(url: String) -> String:
 
 # package name from a link or bare name, - is reserved as the disabled marker
 local function pkg_name(url: String) -> String:
-    set {_name} to last element of (split repo_url({_url}) at "/")
+    set {_name} to (last element of (split repo_url({_url}) at "/"))
     if {_name} ends with ".zip":
         set {_name} to the first (length of {_name} - 4) characters of {_name}
     if any:
@@ -84,7 +88,7 @@ local function pkg_tmp_dir(name: String) -> String:
 
 # linked name with " v<version>" inline (if any) and a (disabled) marker
 local function pkg_display(folder: String) -> String:
-    set {_lines::*} to file_lines("%pkg_root()%/%{_folder}%/package.txt")
+    set {_lines::*} to manifest_lines(pkg_dir({_folder}))
     set {_origin} to manifest_value({_lines::*}, "origin")
     set {_version} to manifest_value({_lines::*}, "version")
     set {_suffix} to ""
@@ -99,7 +103,7 @@ local function strip_root(path: String) -> String:
     set {_slash} to first index of "/" in {_path}
     if {_slash} <= 0:
         stop
-    set {_relative} to sub({_path}, {_slash} + 1)
+    set {_relative} to sub({_path}, ({_slash} + 1))
     if {_relative} is not set:
         stop
     return {_relative}
@@ -107,8 +111,8 @@ local function strip_root(path: String) -> String:
 # numeric segment-wise compare, missing segments count as 0,
 # pre-release suffixes are ignored (2.6.3-beta compares as 2.6.3)
 local function version_at_least(version: String, minimum: String) -> Boolean:
-    set {_have::*} to split (first element of split {_version} at "-") at "."
-    set {_want::*} to split (first element of split {_minimum} at "-") at "."
+    set {_have::*} to split (first element of (split {_version} at "-")) at "."
+    set {_want::*} to split (first element of (split {_minimum} at "-")) at "."
     set {_count} to max(size of {_have::*}, size of {_want::*})
     loop {_count} times:
         set {_a} to ({_have::%loop-number%} parsed as integer) ? 0
@@ -132,16 +136,24 @@ local function manifest_line_value(line: String, key: String) -> String:
         stop
     if {_line} does not start with "%{_key}%:":
         stop
-    return trim(sub({_line}, length of {_key} + 2))
+    return trim(sub({_line}, (length of {_key} + 2)))
+
+# the manifest lines of a package directory, for reading several keys at once
+local function manifest_lines(dir: String) -> Strings:
+    return file_lines("%{_dir}%/package.txt")
+
+# a single manifest value from a package directory
+local function manifest(dir: String, key: String) -> String:
+    return manifest_value(manifest_lines({_dir}), {_key})
 
 # one "requires" entry is a plugin name, optionally followed by >= version
 local function requirement_name(entry: String) -> String:
-    return trim(first element of split {_entry} at ">=")
+    return trim(first element of (split {_entry} at ">="))
 
 local function requirement_min(entry: String) -> String:
     if {_entry} does not contain ">=":
         stop
-    return trim(last element of split {_entry} at ">=")
+    return trim(last element of (split {_entry} at ">="))
 
 # all command/console output goes through here: [pacskage] prefix,
 # orange name in darker orange brackets, message in soft gray
@@ -179,20 +191,20 @@ local function dir_rename(from: String, to: String):
 local function pkg_list() -> Strings:
     if dir_exists(pkg_root()) = false:
         stop
-    set {_paths::*} to ...Files.list(Path.of(pkg_root())).sorted().toArray()
-    set {_dirs::*} to {_paths::*} where [Files.isDirectory(input) is true]
-    return {_dirs::*} transformed with [input.getFileName().toString()]
+    set {_paths::*} to (...Files.list(Path.of(pkg_root())).sorted().toArray())
+    set {_dirs::*} to ({_paths::*} where [(Files.isDirectory(input)) is true])
+    return ({_dirs::*} transformed with [input.getFileName().toString()])
 
 # deletes contents before their parent folders (deepest paths first)
 local function dir_delete(path: String):
-    set {_paths::*} to ...Files.walk(Path.of({_path})).sorted(Comparator.reverseOrder()).toArray()
+    set {_paths::*} to (...Files.walk(Path.of({_path})).sorted(Comparator.reverseOrder()).toArray())
     for {_path} in {_paths::*}:
         Files.delete({_path})
 
 local function file_lines(path: String) -> Strings:
     if dir_exists({_path}) = false:
         stop
-    set {_lines::*} to ...Files.readAllLines(Path.of({_path})).toArray()
+    set {_lines::*} to (...Files.readAllLines(Path.of({_path})).toArray())
     return {_lines::*}
 
 local function file_append_line(path: String, line: String):
@@ -245,10 +257,15 @@ local function zip_extract_entry(zip: Object, entry: Object, root: Object, optio
 
 # package
 
-local function pkg_installed(name: String) -> Boolean:
+# the directory of an installed package, enabled or disabled, or nothing
+local function pkg_resolve(name: String) -> String:
     if dir_exists(pkg_dir({_name})) is true:
-        return true
-    return whether dir_exists(pkg_disabled_dir({_name})) = true
+        return pkg_dir({_name})
+    if dir_exists(pkg_disabled_dir({_name})) is true:
+        return pkg_disabled_dir({_name})
+
+local function pkg_installed(name: String) -> Boolean:
+    return whether pkg_resolve({_name}) is set
 
 # one unmet plugin requirement as a readable line, nothing when satisfied
 local function requirement_missing(entry: String) -> String:
@@ -270,13 +287,13 @@ local function requirement_missing(entry: String) -> String:
 local function pkg_by_origin(url: String) -> String:
     set {_url} to repo_url({_url})
     for {_folder} in pkg_list():
-        set {_origin} to manifest_value(file_lines("%pkg_dir({_folder})%/package.txt"), "origin")
+        set {_origin} to manifest(pkg_dir({_folder}), "origin")
         if repo_url({_origin} ? "") is {_url}:
             return {_folder}
 
 # one missing package dependency, nothing when present (enabled or disabled)
 local function pkg_dep_missing(entry: String) -> String:
-    set {_entry} to trim({_entry}) ? ""
+    set {_entry} to (trim({_entry}) ? "")
     if all:
         {_entry} contains "://"
         pkg_by_origin({_entry}) is set
@@ -291,7 +308,7 @@ local function pkg_dep_missing(entry: String) -> String:
 
 # every unmet requirement of an installed package, nothing when satisfied
 local function pkg_missing(dir: String) -> Strings:
-    set {_lines::*} to file_lines("%{_dir}%/package.txt")
+    set {_lines::*} to manifest_lines({_dir})
     set {_requires::*} to split (manifest_value({_lines::*}, "requires") ? "") at ","
     set {_packages::*} to split (manifest_value({_lines::*}, "packages") ? "") at ","
     return ({_requires::*} transformed with [requirement_missing(input)]) and ({_packages::*} transformed with [pkg_dep_missing(input)])
@@ -317,8 +334,7 @@ local function pkg_dep_status(entry: String) -> String:
 
 # auto-installs url dependencies before the requirement check runs
 local function pkg_install_deps(dir: String, depth: Integer):
-    set {_lines::*} to file_lines("%{_dir}%/package.txt")
-    set {_packages} to manifest_value({_lines::*}, "packages")
+    set {_packages} to manifest({_dir}, "packages")
     if {_packages} is not set:
         stop
     for {_entry} in split {_packages} at ",":
@@ -334,10 +350,10 @@ local function pkg_install_dep(entry: String, depth: Integer):
         stop
     if pkg_installed({_dep}) is true:
         stop
-    set {_installed} to pkg_install({_entry}, {_depth} + 1)
+    set {_installed} to pkg_install({_entry}, ({_depth} + 1))
     if {_installed} is set:
         stop
-    set {_reason} to pkg_error() ? "failed"
+    set {_reason} to (pkg_error() ? "failed")
     pkg_msg(console, "package dependency %{_entry}%: %{_reason}%")
 
 # downloads, extracts and registers one package; unmet requirements leave it
@@ -363,7 +379,7 @@ local function pkg_install(url: String, depth: Integer) -> String:
     dir_create({_dest})
     zip_extract({_bytes}, {_dest})
     # the manifest name wins over the url-derived one
-    set {_manifest} to manifest_value(file_lines("%{_dest}%/package.txt"), "name")
+    set {_manifest} to manifest({_dest}, "name")
     set {_rename} to pkg_name({_manifest} ? "")
     if all:
         {_rename} is set
@@ -386,13 +402,11 @@ local function pkg_install(url: String, depth: Integer) -> String:
 # installed copy unless it already carries the newest version. returns a
 # status message, or nothing with the reason readable via pkg_error()
 local function pkg_update(name: String) -> String:
-    set {_dir} to pkg_dir({_name})
-    if dir_exists({_dir}) = false:
-        set {_dir} to pkg_disabled_dir({_name})
-    if dir_exists({_dir}) = false:
+    set {_dir} to pkg_resolve({_name})
+    if {_dir} is not set:
         pkg_fail("package %{_name}% is not installed")
         stop
-    set {_lines::*} to file_lines("%{_dir}%/package.txt")
+    set {_lines::*} to manifest_lines({_dir})
     set {_origin} to manifest_value({_lines::*}, "origin")
     if {_origin} is not set:
         pkg_fail("package %{_name}% has no origin recorded")
@@ -411,7 +425,7 @@ local function pkg_update(name: String) -> String:
         pkg_fail("downloaded archive from %{_origin}% is empty")
         stop
     set {_current} to manifest_value({_lines::*}, "version")
-    set {_remote} to manifest_value(file_lines("%{_tmp}%/package.txt"), "version")
+    set {_remote} to manifest({_tmp}, "version")
     if all:
         {_current} is set
         {_remote} is set
@@ -446,10 +460,8 @@ local function pkg_bare(folder: String) -> String:
 local function pkg_check_line(folder: String) -> String:
     set {_name} to pkg_bare({_folder})
     set {_disabled} to whether {_folder} starts with "-"
-    set {_dir} to pkg_dir({_name})
-    if {_disabled} is true:
-        set {_dir} to pkg_disabled_dir({_name})
-    set {_link} to pkg_link({_name}, manifest_value(file_lines("%{_dir}%/package.txt"), "origin"))
+    set {_dir} to pkg_dir({_folder})
+    set {_link} to pkg_link({_name}, manifest({_dir}, "origin"))
     set {_missing::*} to pkg_missing({_dir})
     if all:
         {_disabled} is true
@@ -467,10 +479,8 @@ local function pkg_check_line(folder: String) -> String:
 # extracts to a scratch dir only to read the remote manifest, then cleans up
 local function pkg_outdated_line(folder: String) -> String:
     set {_name} to pkg_bare({_folder})
-    set {_dir} to pkg_dir({_name})
-    if {_folder} starts with "-":
-        set {_dir} to pkg_disabled_dir({_name})
-    set {_lines::*} to file_lines("%{_dir}%/package.txt")
+    set {_dir} to pkg_dir({_folder})
+    set {_lines::*} to manifest_lines({_dir})
     set {_origin} to manifest_value({_lines::*}, "origin")
     if {_origin} is not set:
         return "no origin: %{_name}% - cannot check"
@@ -484,7 +494,7 @@ local function pkg_outdated_line(folder: String) -> String:
         dir_delete({_tmp})
     dir_create({_tmp})
     zip_extract({_bytes}, {_tmp})
-    set {_remote} to manifest_value(file_lines("%{_tmp}%/package.txt"), "version")
+    set {_remote} to manifest({_tmp}, "version")
     dir_delete({_tmp})
     if any:
         {_current} is not set
@@ -502,15 +512,15 @@ local function pkg_outdated_line(folder: String) -> String:
 local function pkg_tab_names(sub: String) -> Strings:
     set {_folders::*} to pkg_list()
     if {_sub} is "enable":
-        set {_folders::*} to {_folders::*} where [input starts with "-"]
+        set {_folders::*} to ({_folders::*} where [input starts with "-"])
     else if {_sub} is "disable":
-        set {_folders::*} to {_folders::*} where [input does not start with "-"]
-    return {_folders::*} transformed with [pkg_bare(input)]
+        set {_folders::*} to ({_folders::*} where [input does not start with "-"])
+    return ({_folders::*} transformed with [pkg_bare(input)])
 
 local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
     if length of {_partial} <= 0:
         return {_options::*}
-    return {_options::*} where [input starts with {_partial}]
+    return ({_options::*} where [input starts with {_partial}])
 
 # the one place the command list lives: each subcommand with its argument
 # hint. tab completion and the usage line are both derived from this, so a
@@ -520,18 +530,18 @@ local function pkg_commands() -> Strings:
 
 # just the subcommand keywords (the first word of each entry)
 local function pkg_command_names() -> Strings:
-    return pkg_commands() transformed with [first element of split input at " "]
+    return (pkg_commands() transformed with [first_word(input)])
 
 # subcommands that take a package name, for completing the second argument
 local function pkg_name_commands() -> Strings:
-    return (pkg_commands() where [input contains "<name>"]) transformed with [first element of split input at " "]
+    return ((pkg_commands() where [input contains "<name>"]) transformed with [first_word(input)])
 
 # sends the command list one per line, each entry clickable to prefill it
 # in the chat box ready to fill in the argument
 local function pkg_usage(to: Object):
     pkg_msg({_to}, "commands (click one to use it):")
     for {_entry} in pkg_commands():
-        set {_cmd} to first element of split {_entry} at " "
+        set {_cmd} to first_word({_entry})
         pkg_msg({_to}, "  <click:suggest_command:/package %{_cmd}% >{@c_link}/package %{_entry}%</click>{@c_body}")
 
 # candidates for the /package argument currently being typed, given
@@ -539,10 +549,10 @@ local function pkg_usage(to: Object):
 local function pkg_tab(rest: String) -> Strings:
     if {_rest} does not contain " ":
         return pkg_tab_filter(pkg_command_names(), {_rest})
-    set {_sub} to first element of split {_rest} at " "
+    set {_sub} to first_word({_rest})
     if pkg_name_commands() does not contain {_sub}:
         stop
-    set {_partial} to sub({_rest}, length of {_sub} + 2)
+    set {_partial} to sub({_rest}, (length of {_sub} + 2))
     return pkg_tab_filter(pkg_tab_names({_sub}), {_partial} ? "")
 
 on TabCompleteEvent:
@@ -570,7 +580,7 @@ command /package [<effect: text>] [<pkg: text>]:
             if {_packages::*} is not set:
                 pkg_msg(sender, "no packages installed")
                 stop
-            set {_display::*} to {_packages::*} transformed with [pkg_display(input)]
+            set {_display::*} to ({_packages::*} transformed with [pkg_display(input)])
             pkg_msg(sender, "installed packages (%size of {_display::*}%): %{_display::*}%")
             stop
         if {_effect} is "check":
@@ -619,10 +629,8 @@ command /package [<effect: text>] [<pkg: text>]:
             pkg_msg(sender, {_status} ? pkg_error() ? "update failed")
             stop
         else if {_effect} is "remove":
-            set {_dest} to pkg_dir({_name})
-            if dir_exists({_dest}) = false:
-                set {_dest} to pkg_disabled_dir({_name})
-            if dir_exists({_dest}) = false:
+            set {_dest} to pkg_resolve({_name})
+            if {_dest} is not set:
                 pkg_msg(sender, "package %{_name}% is not installed")
                 stop
             dir_delete({_dest})
@@ -654,17 +662,16 @@ command /package [<effect: text>] [<pkg: text>]:
             pkg_msg(sender, "disabled %{_name}% - /sk reload scripts to apply")
             stop
         else if {_effect} is "info":
-            set {_dir} to pkg_dir({_name})
-            set {_state} to ""
-            if dir_exists({_dir}) = false:
-                set {_dir} to pkg_disabled_dir({_name})
-                set {_state} to " (disabled)"
-            if dir_exists({_dir}) = false:
+            set {_dir} to pkg_resolve({_name})
+            if {_dir} is not set:
                 pkg_msg(sender, "package %{_name}% is not installed")
                 stop
-            set {_lines::*} to file_lines("%{_dir}%/package.txt")
+            set {_state} to ""
+            if {_dir} is pkg_disabled_dir({_name}):
+                set {_state} to " (disabled)"
+            set {_lines::*} to manifest_lines({_dir})
             set {_origin} to manifest_value({_lines::*}, "origin")
-            set {_title} to manifest_value({_lines::*}, "name") ? {_name}
+            set {_title} to (manifest_value({_lines::*}, "name") ? {_name})
             set {_version} to manifest_value({_lines::*}, "version")
             set {_ver} to ""
             if {_version} is set:
