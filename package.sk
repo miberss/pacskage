@@ -512,13 +512,35 @@ local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
         return {_options::*}
     return {_options::*} where [input starts with {_partial}]
 
+# the one place the command list lives: each subcommand with its argument
+# hint. tab completion and the usage line are both derived from this, so a
+# new command only needs an entry here plus its branch in the trigger
+local function pkg_commands() -> Strings:
+    return "install <git url>", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated" and "awesome"
+
+# just the subcommand keywords (the first word of each entry)
+local function pkg_command_names() -> Strings:
+    return pkg_commands() transformed with [first element of split input at " "]
+
+# subcommands that take a package name, for completing the second argument
+local function pkg_name_commands() -> Strings:
+    return (pkg_commands() where [input contains "<name>"]) transformed with [first element of split input at " "]
+
+# sends the command list one per line, each entry clickable to prefill it
+# in the chat box ready to fill in the argument
+local function pkg_usage(to: Object):
+    pkg_msg({_to}, "commands (click one to use it):")
+    for {_entry} in pkg_commands():
+        set {_cmd} to first element of split {_entry} at " "
+        pkg_msg({_to}, "  <click:suggest_command:/package %{_cmd}% >{@c_link}/package %{_entry}%</click>{@c_body}")
+
 # candidates for the /package argument currently being typed, given
 # everything after "package " in the buffer
 local function pkg_tab(rest: String) -> Strings:
     if {_rest} does not contain " ":
-        return pkg_tab_filter(("install", "update", "remove", "enable", "disable", "info", "list", "check" and "outdated"), {_rest})
+        return pkg_tab_filter(pkg_command_names(), {_rest})
     set {_sub} to first element of split {_rest} at " "
-    if {_sub} is not "update", "remove", "enable", "disable" or "info":
+    if pkg_name_commands() does not contain {_sub}:
         stop
     set {_partial} to sub({_rest}, length of {_sub} + 2)
     return pkg_tab_filter(pkg_tab_names({_sub}), {_partial} ? "")
@@ -537,9 +559,12 @@ on TabCompleteEvent:
         {_list}.add({_completion})
     event.setCompletions({_list})
 
-command /package <effect: text> [<pkg: text>]:
+command /package [<effect: text>] [<pkg: text>]:
     permission: console and ops
     trigger:
+        if {_effect} is not set:
+            pkg_usage(sender)
+            stop
         if {_effect} is "list":
             set {_packages::*} to pkg_list()
             if {_packages::*} is not set:
@@ -566,9 +591,14 @@ command /package <effect: text> [<pkg: text>]:
             for {_folder} in {_folders::*}:
                 pkg_msg(sender, pkg_outdated_line({_folder}))
             stop
+        if {_effect} is "awesome":
+            set {_link} to pkg_link("awesome-pacskage", "https://github.com/miberss/awesome-pacskage")
+            pkg_msg(sender, "%{_link}% is a community list of packages to install")
+            pkg_msg(sender, "find one you like, then /package install <its git url>")
+            stop
         set {_name} to pkg_name({_pkg} ? "")
         if {_name} is not set:
-            pkg_msg(sender, "usage: /package (install <git url>  |  update <name>  |  remove <name>  |  enable <name>  |  disable <name>  |  info <name>  |  list  |  check  |  outdated)")
+            pkg_usage(sender)
             stop
         if {_effect} is "install":
             pkg_msg(sender, "installing from %{_pkg}%...")
@@ -656,4 +686,4 @@ command /package <effect: text> [<pkg: text>]:
                 for {_entry} in split {_packages} at ",":
                     pkg_msg(sender, pkg_dep_status({_entry}) ? "  ?")
             stop
-        pkg_msg(sender, "usage: /package (install <git url>|update <name>|remove <name>|enable <name>|disable <name>|info <name>|list|check|outdated)")
+        pkg_usage(sender)

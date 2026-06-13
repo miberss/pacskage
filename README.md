@@ -13,7 +13,7 @@ curl -o plugins/Skript/scripts/package.sk https://raw.githubusercontent.com/mibe
 ```
 /package install <git url>
 /package (update|remove|enable|disable|info) <name>
-/package (list|check|outdated)
+/package (list|check|outdated|awesome)
 ```
 
 Packages are installed into `scripts/packages/`. Browse available packages at
