@@ -15,16 +15,14 @@ import:
     org.bukkit.Bukkit
     org.bukkit.event.server.TabCompleteEvent
 
-# palette, referenced as {@name}. hex tags are written with ## so the
-# leading # is not read as the start of a comment in this section
 options:
-    c_bracket: <##cc5500>
-    c_brand: <##ff8800>
-    c_body: <##dddddd>
-    c_link: <##55aaff>
-    c_ok: <##55ff55>
-    c_warn: <##ffaa00>
-    c_error: <##ff5555>
+    c_bracket: <##566c86>
+    c_brand: <##ef7d57>
+    c_body: <##94b0c2>
+    c_link: <##41a6f6>
+    c_ok: <##38b764>
+    c_warn: <##ffcd75>
+    c_error: <##b13e53>
 
 # subtext of {_text} from {_start}, to the end of the string by default
 local function sub(text: String, start: Integer, end: Integer = -1) -> String:
@@ -71,8 +69,10 @@ local function repo_url(url: String) -> String:
         set {_url} to the first (length of {_url} - 4) characters of {_url}
     return {_url}
 
-# package name from a link or bare name, - is reserved as the disabled marker
-local function pkg_name(url: String) -> String:
+# package name from a link or bare name, - is reserved as the disabled marker.
+# part of the public api: other packages may call this to learn the folder a
+# url installs as
+function pkg_name(url: String) -> String:
     set {_name} to (last element of (split repo_url({_url}) at "/"))
     if {_name} ends with ".zip":
         set {_name} to the first (length of {_name} - 4) characters of {_name}
@@ -101,7 +101,6 @@ local function pkg_dir(name: String) -> String:
 local function pkg_disabled_dir(name: String) -> String:
     return "%pkg_root()%/-%{_name}%"
 
-# scratch space outside scripts/ so a half-written download never loads
 local function pkg_tmp_dir(name: String) -> String:
     return Path.of("%scripts_root()%/../.pacskage-tmp-%{_name}%").normalize().toString()
 
@@ -175,7 +174,6 @@ local function requirement_min(entry: String) -> String:
     return trim(last element of (split {_entry} at ">="))
 
 # all command/console output goes through here: [pacskage] prefix,
-# orange name in darker orange brackets, message in soft gray
 local function pkg_msg(to: Object, message: String):
     send formatted "{@c_bracket}[{@c_brand}pacskage{@c_bracket}]<reset> {@c_body}%{_message}%" to {_to}
 
@@ -274,8 +272,6 @@ local function zip_extract_entry(zip: Object, entry: Object, root: Object, optio
     Files.createDirectories({_target}.getParent())
     Files.write({_target}, {_zip}.readAllBytes(), {_options})
 
-# package
-
 # the directory of an installed package, enabled or disabled, or nothing
 local function pkg_resolve(name: String) -> String:
     if dir_exists(pkg_dir({_name})) is true:
@@ -302,8 +298,10 @@ local function requirement_missing(entry: String) -> String:
     return "%{_name}% >= %{_min}% (installed: %{_installed}%)"
 
 # resolves a dependency url to the installed package recorded as coming
-# from it, since a manifest name can differ from the url-derived one
-local function pkg_by_origin(url: String) -> String:
+# from it, since a manifest name can differ from the url-derived one. part of
+# the public api: other packages may call this to test whether a url is
+# installed (returns its folder name, or nothing)
+function pkg_by_origin(url: String) -> String:
     set {_url} to repo_url({_url})
     for {_folder} in pkg_list():
         set {_origin} to manifest(pkg_dir({_folder}), "origin")
@@ -417,6 +415,19 @@ local function pkg_install(url: String, depth: Integer) -> String:
         dir_rename({_dest}, pkg_disabled_dir({_name}))
     return {_name}
 
+function pkg_install_report(sender: Object, url: String):
+    pkg_msg({_sender}, "installing from %{_url}%...")
+    set {_installed} to pkg_install({_url}, 0)
+    if {_installed} is not set:
+        pkg_msg({_sender}, pkg_error() ? "install failed")
+        stop
+    set {_disabled} to pkg_disabled_dir({_installed})
+    if dir_exists({_disabled}) is true:
+        pkg_msg({_sender}, "installed %{_installed}% disabled, missing: %pkg_missing({_disabled})%")
+        pkg_msg({_sender}, "resolve the requirements, then run /package enable %{_installed}%")
+        stop
+    pkg_msg({_sender}, "installed %{_installed}% - /sk reload scripts to apply")
+
 # re-downloads a package from its recorded origin and replaces the
 # installed copy unless it already carries the newest version. returns a
 # status message, or nothing with the reason readable via pkg_error()
@@ -465,8 +476,6 @@ local function pkg_update(name: String) -> String:
         return "updated %{_name}%%{_version}% disabled, missing: %pkg_missing(pkg_disabled_dir({_name}))%"
     return "updated %{_name}%%{_version}% - /sk reload scripts to apply"
 
-# check
-
 # folder name without the leading disabled marker
 local function pkg_bare(folder: String) -> String:
     if {_folder} does not start with "-":
@@ -475,7 +484,7 @@ local function pkg_bare(folder: String) -> String:
 
 # one status line per installed package: flags enabled packages whose
 # requirements have since broken (red), and disabled ones now satisfiable
-# (green), so /package check surfaces drift since install time
+# (green)
 local function pkg_check_line(folder: String) -> String:
     set {_name} to pkg_bare({_folder})
     set {_disabled} to whether {_folder} starts with "-"
@@ -493,9 +502,6 @@ local function pkg_check_line(folder: String) -> String:
         return "{@c_error}broken{@c_body}: %{_link}% - missing: %{_missing::*}%"
     return "ok: %{_link}%"
 
-# one status line per installed package comparing its recorded version against
-# the one its origin archive currently declares, without touching the install.
-# extracts to a scratch dir only to read the remote manifest, then cleans up
 local function pkg_outdated_line(folder: String) -> String:
     set {_name} to pkg_bare({_folder})
     set {_dir} to pkg_dir({_folder})
@@ -524,8 +530,6 @@ local function pkg_outdated_line(folder: String) -> String:
         return "ok: %{_link}% (%{_current}%)"
     return "{@c_warn}outdated{@c_body}: %{_link}% (%{_current}% -> %{_remote}%)"
 
-# tab completion
-
 # bare names of installed packages a subcommand can act on: enable only
 # offers disabled packages, disable only enabled ones, the rest offer all
 local function pkg_tab_names(sub: String) -> Strings:
@@ -541,9 +545,6 @@ local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
         return {_options::*}
     return ({_options::*} where [input starts with {_partial}])
 
-# the one place the command list lives: each subcommand with its argument
-# hint. tab completion and the usage line are both derived from this, so a
-# new command only needs an entry here plus its branch in the trigger
 local function pkg_commands() -> Strings:
     return "install <git url>[@version]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated" and "awesome"
 
@@ -555,8 +556,6 @@ local function pkg_command_names() -> Strings:
 local function pkg_name_commands() -> Strings:
     return ((pkg_commands() where [input contains "<name>"]) transformed with [first_word(input)])
 
-# sends the command list one per line, each entry clickable to prefill it
-# in the chat box ready to fill in the argument
 local function pkg_usage(to: Object):
     pkg_msg({_to}, "commands (click one to use it):")
     for {_entry} in pkg_commands():
@@ -630,17 +629,7 @@ command /package [<effect: text>] [<pkg: text>]:
             pkg_usage(sender)
             stop
         if {_effect} is "install":
-            pkg_msg(sender, "installing from %{_pkg}%...")
-            set {_installed} to pkg_install({_pkg}, 0)
-            if {_installed} is not set:
-                pkg_msg(sender, pkg_error() ? "install failed")
-                stop
-            set {_disabled} to pkg_disabled_dir({_installed})
-            if dir_exists({_disabled}) is true:
-                pkg_msg(sender, "installed %{_installed}% disabled, missing: %pkg_missing({_disabled})%")
-                pkg_msg(sender, "resolve the requirements, then run /package enable %{_installed}%")
-                stop
-            pkg_msg(sender, "installed %{_installed}% - /sk reload scripts to apply")
+            pkg_install_report(sender, {_pkg})
             stop
         else if {_effect} is "update":
             pkg_msg(sender, "updating %{_name}% from its origin...")
