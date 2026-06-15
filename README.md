@@ -13,13 +13,13 @@ curl -o plugins/Skript/scripts/package.sk https://raw.githubusercontent.com/mibe
 ```
 /package install <git url>[@version]
 /package (update|remove|enable|disable|info) <name>
-/package (list|check|outdated|awesome)
+/package (list|check|outdated|browser|awesome)
 ```
 
 Packages are installed into `scripts/packages/`. Browse available packages at
-[awesome-pacskage](https://github.com/miberss/awesome-pacskage), or install
-[pacskage-browser](https://github.com/miberss/pacskage-browser) for an in-game
-GUI to browse and install them with a click.
+[awesome-pacskage](https://github.com/miberss/awesome-pacskage), or run
+`/package browser` for an in-game GUI (it prompts to install
+[pacskage-browser](https://github.com/miberss/pacskage-browser) the first time).
 
 Append `@version` to an install url to pin a specific tag, branch, or commit
 instead of the default branch.
