@@ -1,3 +1,5 @@
+using script reflection
+
 import:
     ch.njol.skript.Skript
     java.io.ByteArrayInputStream
@@ -16,13 +18,13 @@ import:
     org.bukkit.event.server.TabCompleteEvent
 
 options:
-    c_bracket: <##566c86>
-    c_brand: <##ef7d57>
-    c_body: <##94b0c2>
-    c_link: <##41a6f6>
-    c_ok: <##38b764>
-    c_warn: <##ffcd75>
-    c_error: <##b13e53>
+    bracket: <##566c86>
+    brand: <##ef7d57>
+    body: <##94b0c2>
+    link: <##41a6f6>
+    ok: <##38b764>
+    warn: <##ffcd75>
+    error: <##b13e53>
 
 # subtext of {_text} from {_start}, to the end of the string by default
 local function sub(text: String, start: Integer, end: Integer = -1) -> String:
@@ -175,14 +177,14 @@ local function requirement_min(entry: String) -> String:
 
 # all command/console output goes through here: [pacskage] prefix,
 local function pkg_msg(to: Object, message: String):
-    send formatted "{@c_bracket}[{@c_brand}pacskage{@c_bracket}]<reset> {@c_body}%{_message}%" to {_to}
+    send formatted "{@bracket}[{@brand}pacskage{@bracket}]<reset> {@body}%{_message}%" to {_to}
 
 # a package name as a clickable, underlined link to its origin (opens the
 # repo in a browser); a plain colored name when no origin is recorded
 local function pkg_link(name: String, url: String) -> String:
     if {_url} is not set:
-        return "{@c_link}%{_name}%{@c_body}"
-    return "<click:open_url:%{_url}%>{@c_link}<underlined>%{_name}%</underlined></click>{@c_body}"
+        return "{@link}%{_name}%{@body}"
+    return "<click:open_url:%{_url}%>{@link}<underlined>%{_name}%</underlined></click>{@body}"
 
 local function pkg_fail(message: String):
     set {-package::error} to {_message}
@@ -495,11 +497,11 @@ local function pkg_check_line(folder: String) -> String:
         {_disabled} is true
         {_missing::*} is not set
     then:
-        return "{@c_ok}ready{@c_body}: %{_link}% - requirements met, run /package enable %{_name}%"
+        return "{@ok}ready{@body}: %{_link}% - requirements met, run /package enable %{_name}%"
     if {_disabled} is true:
         return "disabled: %{_link}% - missing: %{_missing::*}%"
     if {_missing::*} is set:
-        return "{@c_error}broken{@c_body}: %{_link}% - missing: %{_missing::*}%"
+        return "{@error}broken{@body}: %{_link}% - missing: %{_missing::*}%"
     return "ok: %{_link}%"
 
 local function pkg_outdated_line(folder: String) -> String:
@@ -513,7 +515,7 @@ local function pkg_outdated_line(folder: String) -> String:
     set {_current} to manifest_value({_lines::*}, "version")
     set {_bytes} to http_get(pkg_zip_url({_origin}))
     if {_bytes} is not set:
-        return "{@c_error}failed{@c_body}: %{_link}% - could not download from origin"
+        return "{@error}failed{@body}: %{_link}% - could not download from origin"
     set {_tmp} to pkg_tmp_dir({_name})
     if dir_exists({_tmp}) is true:
         dir_delete({_tmp})
@@ -528,7 +530,7 @@ local function pkg_outdated_line(folder: String) -> String:
         return "unknown: %{_link}% - no version to compare"
     if version_at_least({_current}, {_remote}) is true:
         return "ok: %{_link}% (%{_current}%)"
-    return "{@c_warn}outdated{@c_body}: %{_link}% (%{_current}% -> %{_remote}%)"
+    return "{@warn}outdated{@body}: %{_link}% (%{_current}% -> %{_remote}%)"
 
 # bare names of installed packages a subcommand can act on: enable only
 # offers disabled packages, disable only enabled ones, the rest offer all
@@ -546,7 +548,7 @@ local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
     return ({_options::*} where [input starts with {_partial}])
 
 local function pkg_commands() -> Strings:
-    return "install <git url>[@version]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated" and "awesome"
+    return "install <git url>[@version]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated", "browser" and "awesome"
 
 # just the subcommand keywords (the first word of each entry)
 local function pkg_command_names() -> Strings:
@@ -556,11 +558,24 @@ local function pkg_command_names() -> Strings:
 local function pkg_name_commands() -> Strings:
     return ((pkg_commands() where [input contains "<name>"]) transformed with [first_word(input)])
 
+# opens the package browser, which ships as its own optional package. it is not
+# a dependency of pacskage, so its function is only referenced by name at
+# runtime via script reflection
+local function pkg_browser(sender: Object, page: String):
+    set {_open} to function named "pacskage_browser"
+    if {_open} is not set:
+        set {_url} to "https://github.com/miberss/pacskage-browser"
+        pkg_msg({_sender}, "the package browser is not installed")
+        pkg_msg({_sender}, "install it with <click:suggest_command:/package install %{_url}%>{@link}<underlined>/package install %{_url}%</underlined></click>")
+        stop
+    set {_n} to ({_page} parsed as integer) ? 1
+    run {_open} with arguments {_sender}, {_n}
+
 local function pkg_usage(to: Object):
     pkg_msg({_to}, "commands (click one to use it):")
     for {_entry} in pkg_commands():
         set {_cmd} to first_word({_entry})
-        pkg_msg({_to}, "  <click:suggest_command:/package %{_cmd}% >{@c_link}/package %{_entry}%</click>{@c_body}")
+        pkg_msg({_to}, "  <click:suggest_command:/package %{_cmd}% >{@link}/package %{_entry}%</click>{@body}")
 
 # candidates for the /package argument currently being typed, given
 # everything after "package " in the buffer
@@ -580,8 +595,6 @@ on TabCompleteEvent:
     if {_buffer} does not start with "package ":
         stop
     set {_rest} to sub({_buffer}, 9)
-    # built element-wise: handing the whole array to a varargs method
-    # would land in the single-argument overload and corrupt the list
     set {_list} to new ArrayList()
     for {_completion} in pkg_tab({_rest} ? ""):
         {_list}.add({_completion})
@@ -623,6 +636,9 @@ command /package [<effect: text>] [<pkg: text>]:
             set {_link} to pkg_link("awesome-pacskage", "https://github.com/miberss/awesome-pacskage")
             pkg_msg(sender, "%{_link}% is a community list of packages to install")
             pkg_msg(sender, "find one you like, then /package install <its git url>")
+            stop
+        if {_effect} is "browser":
+            pkg_browser(sender, {_pkg})
             stop
         set {_name} to pkg_name({_pkg} ? "")
         if {_name} is not set:
