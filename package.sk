@@ -548,7 +548,7 @@ local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
     return ({_options::*} where [input starts with {_partial}])
 
 local function pkg_commands() -> Strings:
-    return "install <git url>[@version]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated", "browser" and "awesome"
+    return "install <git url>[@version]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated", "browser", "selfupdate" and "awesome"
 
 # just the subcommand keywords (the first word of each entry)
 local function pkg_command_names() -> Strings:
@@ -570,6 +570,19 @@ local function pkg_browser(sender: Object, page: String):
         stop
     set {_n} to ({_page} parsed as integer) ? 1
     run {_open} with arguments {_sender}, {_n}
+
+# overwrites the running package.sk with the latest from the repo. the path is
+# fixed: pacskage always lives as package.sk at the scripts root
+local function pkg_selfupdate(sender: Object):
+    set {_url} to "https://raw.githubusercontent.com/miberss/pacskage/HEAD/package.sk"
+    pkg_msg({_sender}, "updating pacskage from %{_url}%...")
+    set {_bytes} to http_get({_url})
+    if {_bytes} is not set:
+        pkg_msg({_sender}, "download failed for %{_url}%")
+        stop
+    set {_options} to [StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING]
+    Files.write(Path.of("%scripts_root()%/package.sk"), {_bytes}, {_options})
+    pkg_msg({_sender}, "updated pacskage - /sk reload package.sk to apply")
 
 local function pkg_usage(to: Object):
     pkg_msg({_to}, "commands (click one to use it):")
@@ -639,6 +652,9 @@ command /package [<effect: text>] [<pkg: text>]:
             stop
         if {_effect} is "browser":
             pkg_browser(sender, {_pkg})
+            stop
+        if {_effect} is "selfupdate":
+            pkg_selfupdate(sender)
             stop
         set {_name} to pkg_name({_pkg} ? "")
         if {_name} is not set:
