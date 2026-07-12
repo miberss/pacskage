@@ -1,3 +1,11 @@
+options:
+    # USE AT YOUR OWN RISK!
+    # Enabling this option updates all enabled packages whenever the server starts. 
+    # This could theoretically allow people to inject malicious code into your server. 
+    # Also, packages may introduce changes that break features on your server.
+    # USE AT YOUR OWN RISK!
+    auto-update-packages: false # true or false
+
 using script reflection
 
 import:
@@ -583,6 +591,23 @@ local function pkg_selfupdate(sender: Object):
     set {_options} to [StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING]
     Files.write(Path.of("%scripts_root()%/package.sk"), {_bytes}, {_options})
     pkg_msg({_sender}, "updated pacskage - /sk reload package.sk to apply")
+
+local function pkg_autoupdate():
+    set {_folders::*} to pkg_list()
+    for {_folder} in {_folders::*}:
+        if {_folder} starts with "-":
+            continue
+        set {_name} to pkg_bare({_folder})
+        set {_status} to pkg_update({_name})
+        if {_status} starts with "updated ":
+            pkg_msg(console, {_status})
+        else if {_status} is not set:
+            pkg_error()
+
+on skript start:
+    suppress constant conditions warning
+    if {@auto-update-packages} is true:
+        pkg_autoupdate()
 
 local function pkg_usage(to: Object):
     pkg_msg({_to}, "commands (click one to use it):")
