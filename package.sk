@@ -9,7 +9,6 @@ import:
     java.nio.file.Files
     java.nio.file.Path
     java.nio.file.StandardOpenOption
-    java.util.Comparator
     java.util.zip.ZipInputStream
     org.bukkit.Bukkit
 
@@ -212,7 +211,7 @@ local function pkg_list() -> Strings:
 
 # deletes contents before their parent folders (deepest paths first)
 local function dir_delete(path: String):
-    set {_paths::*} to (...Files.walk(Path.of({_path})).sorted(Comparator.reverseOrder()).toArray())
+    set {_paths::*} to reversed (...Files.walk(Path.of({_path})).toArray())
     for {_path} in {_paths::*}:
         Files.delete({_path})
 
