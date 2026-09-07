@@ -1,5 +1,3 @@
-using script reflection
-
 import:
     ch.njol.skript.Skript
     java.io.ByteArrayInputStream
@@ -11,11 +9,9 @@ import:
     java.nio.file.Files
     java.nio.file.Path
     java.nio.file.StandardOpenOption
-    java.util.ArrayList
     java.util.Comparator
     java.util.zip.ZipInputStream
     org.bukkit.Bukkit
-    org.bukkit.event.server.TabCompleteEvent
 
 options:
     bracket: <##566c86>
@@ -532,49 +528,13 @@ local function pkg_outdated_line(folder: String) -> String:
         return "ok: %{_link}% (%{_current}%)"
     return "{@warn}outdated{@body}: %{_link}% (%{_current}% -> %{_remote}%)"
 
-# bare names of installed packages a subcommand can act on: enable only
-# offers disabled packages, disable only enabled ones, the rest offer all
-local function pkg_tab_names(sub: String) -> Strings:
-    set {_folders::*} to pkg_list()
-    if {_sub} is "enable":
-        set {_folders::*} to ({_folders::*} where [input starts with "-"])
-    else if {_sub} is "disable":
-        set {_folders::*} to ({_folders::*} where [input does not start with "-"])
-    return ({_folders::*} transformed with [pkg_bare(input)])
-
-local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
-    if length of {_partial} <= 0:
-        return {_options::*}
-    return ({_options::*} where [input starts with {_partial}])
-
 local function pkg_commands() -> Strings:
-    return "install <git url>[@version]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated", "browser", "selfupdate" and "awesome"
-
-# just the subcommand keywords (the first word of each entry)
-local function pkg_command_names() -> Strings:
-    return (pkg_commands() transformed with [first_word(input)])
-
-# subcommands that take a package name, for completing the second argument
-local function pkg_name_commands() -> Strings:
-    return ((pkg_commands() where [input contains "<name>"]) transformed with [first_word(input)])
-
-# opens the package browser, which ships as its own optional package. it is not
-# a dependency of pacskage, so its function is only referenced by name at
-# runtime via script reflection
-local function pkg_browser(sender: Object, page: String):
-    set {_open} to function named "pacskage_browser"
-    if {_open} is not set:
-        set {_url} to "https://github.com/miberss/pacskage-browser"
-        pkg_msg({_sender}, "the package browser is not installed")
-        pkg_msg({_sender}, "install it with <click:suggest_command:/package install %{_url}%>{@link}<underlined>/package install %{_url}%</underlined></click>")
-        stop
-    set {_n} to ({_page} parsed as integer) ? 1
-    run {_open} with arguments {_sender}, {_n}
+    return "install <git url>[@version]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated", "selfupdate" and "awesome"
 
 # overwrites the running package.sk with the latest from the repo. the path is
 # fixed: pacskage always lives as package.sk at the scripts root
 local function pkg_selfupdate(sender: Object):
-    set {_url} to "https://raw.githubusercontent.com/miberss/pacskage/HEAD/package.sk"
+    set {_url} to "https://raw.githubusercontent.com/miberss/pacskage/refs/heads/skript-minestom/package.sk"
     pkg_msg({_sender}, "updating pacskage from %{_url}%...")
     set {_bytes} to http_get({_url})
     if {_bytes} is not set:
@@ -590,147 +550,146 @@ local function pkg_usage(to: Object):
         set {_cmd} to first_word({_entry})
         pkg_msg({_to}, "  <click:suggest_command:/package %{_cmd}% >{@link}/package %{_entry}%</click>{@body}")
 
-# candidates for the /package argument currently being typed, given
-# everything after "package " in the buffer
-local function pkg_tab(rest: String) -> Strings:
-    if {_rest} does not contain " ":
-        return pkg_tab_filter(pkg_command_names(), {_rest})
-    set {_sub} to first_word({_rest})
-    if pkg_name_commands() does not contain {_sub}:
+local function pkg_list_report(sender: Object):
+    set {_packages::*} to pkg_list()
+    if {_packages::*} is not set:
+        pkg_msg({_sender}, "no packages installed")
         stop
-    set {_partial} to sub({_rest}, (length of {_sub} + 2))
-    return pkg_tab_filter(pkg_tab_names({_sub}), {_partial} ? "")
+    set {_display::*} to ({_packages::*} transformed with [pkg_display(input)])
+    pkg_msg({_sender}, "installed packages (%size of {_display::*}%): %{_display::*}%")
 
-on TabCompleteEvent:
-    set {_buffer} to event.getBuffer()
-    if {_buffer} starts with "/":
-        set {_buffer} to sub({_buffer}, 2)
-    if {_buffer} does not start with "package ":
+local function pkg_check_report(sender: Object):
+    set {_folders::*} to pkg_list()
+    if {_folders::*} is not set:
+        pkg_msg({_sender}, "no packages installed")
         stop
-    set {_rest} to sub({_buffer}, 9)
-    set {_list} to new ArrayList()
-    for {_completion} in pkg_tab({_rest} ? ""):
-        {_list}.add({_completion})
-    event.setCompletions({_list})
+    pkg_msg({_sender}, "checking %size of {_folders::*}% package(s)...")
+    for {_folder} in {_folders::*}:
+        pkg_msg({_sender}, pkg_check_line({_folder}))
 
-command /package [<effect: text>] [<pkg: text>]:
-    permission: console and ops
-    trigger:
-        if {_effect} is not set:
-            pkg_usage(sender)
+local function pkg_outdated_report(sender: Object):
+    set {_folders::*} to pkg_list()
+    if {_folders::*} is not set:
+        pkg_msg({_sender}, "no packages installed")
+        stop
+    pkg_msg({_sender}, "checking %size of {_folders::*}% package(s) for updates...")
+    for {_folder} in {_folders::*}:
+        pkg_msg({_sender}, pkg_outdated_line({_folder}))
+
+local function pkg_awesome(sender: Object):
+    set {_link} to pkg_link("awesome-pacskage", "https://github.com/miberss/awesome-pacskage")
+    pkg_msg({_sender}, "%{_link}% is a community list of packages to install")
+    pkg_msg({_sender}, "find one you like, then /package install <its git url>")
+
+local function pkg_update_report(sender: Object, name: String):
+    pkg_msg({_sender}, "updating %{_name}% from its origin...")
+    set {_status} to pkg_update({_name})
+    pkg_msg({_sender}, {_status} ? pkg_error() ? "update failed")
+
+local function pkg_remove_report(sender: Object, name: String):
+    set {_dest} to pkg_resolve({_name})
+    if {_dest} is not set:
+        pkg_msg({_sender}, "package %{_name}% is not installed")
+        stop
+    dir_delete({_dest})
+    pkg_msg({_sender}, "removed %{_name}% - /sk reload scripts to apply")
+
+local function pkg_enable_report(sender: Object, name: String):
+    set {_from} to pkg_disabled_dir({_name})
+    if dir_exists({_from}) = false:
+        if dir_exists(pkg_dir({_name})) is true:
+            pkg_msg({_sender}, "package %{_name}% is already enabled")
             stop
-        if {_effect} is "list":
-            set {_packages::*} to pkg_list()
-            if {_packages::*} is not set:
-                pkg_msg(sender, "no packages installed")
-                stop
-            set {_display::*} to ({_packages::*} transformed with [pkg_display(input)])
-            pkg_msg(sender, "installed packages (%size of {_display::*}%): %{_display::*}%")
-            stop
-        if {_effect} is "check":
-            set {_folders::*} to pkg_list()
-            if {_folders::*} is not set:
-                pkg_msg(sender, "no packages installed")
-                stop
-            pkg_msg(sender, "checking %size of {_folders::*}% package(s)...")
-            for {_folder} in {_folders::*}:
-                pkg_msg(sender, pkg_check_line({_folder}))
-            stop
-        if {_effect} is "outdated":
-            set {_folders::*} to pkg_list()
-            if {_folders::*} is not set:
-                pkg_msg(sender, "no packages installed")
-                stop
-            pkg_msg(sender, "checking %size of {_folders::*}% package(s) for updates...")
-            for {_folder} in {_folders::*}:
-                pkg_msg(sender, pkg_outdated_line({_folder}))
-            stop
-        if {_effect} is "awesome":
-            set {_link} to pkg_link("awesome-pacskage", "https://github.com/miberss/awesome-pacskage")
-            pkg_msg(sender, "%{_link}% is a community list of packages to install")
-            pkg_msg(sender, "find one you like, then /package install <its git url>")
-            stop
-        if {_effect} is "browser":
-            pkg_browser(sender, {_pkg})
-            stop
-        if {_effect} is "selfupdate":
+        pkg_msg({_sender}, "package %{_name}% is not installed")
+        stop
+    set {_missing::*} to pkg_missing({_from})
+    if {_missing::*} is set:
+        pkg_msg({_sender}, "cannot enable %{_name}%, missing: %{_missing::*}%")
+        stop
+    dir_rename({_from}, pkg_dir({_name}))
+    pkg_msg({_sender}, "enabled %{_name}% - /sk reload scripts to apply")
+
+local function pkg_disable_report(sender: Object, name: String):
+    if dir_exists(pkg_disabled_dir({_name})) is true:
+        pkg_msg({_sender}, "package %{_name}% is already disabled")
+        stop
+    if dir_exists(pkg_dir({_name})) is false:
+        pkg_msg({_sender}, "package %{_name}% is not installed")
+        stop
+    dir_rename(pkg_dir({_name}), pkg_disabled_dir({_name}))
+    pkg_msg({_sender}, "disabled %{_name}% - /sk reload scripts to apply")
+
+local function pkg_info_requirements(sender: Object, lines: Strings):
+    set {_requires} to manifest_value({_lines::*}, "requires")
+    if {_requires} is set:
+        pkg_msg({_sender}, "requires:")
+        for {_entry} in split {_requires} at ",":
+            pkg_msg({_sender}, requirement_status({_entry}) ? "  ?")
+    set {_packages} to manifest_value({_lines::*}, "packages")
+    if {_packages} is not set:
+        stop
+    pkg_msg({_sender}, "packages:")
+    for {_entry} in split {_packages} at ",":
+        pkg_msg({_sender}, pkg_dep_status({_entry}) ? "  ?")
+
+local function pkg_info_report(sender: Object, name: String):
+    set {_dir} to pkg_resolve({_name})
+    if {_dir} is not set:
+        pkg_msg({_sender}, "package %{_name}% is not installed")
+        stop
+    set {_lines::*} to manifest_lines({_dir})
+    set {_origin} to manifest_value({_lines::*}, "origin")
+    set {_title} to (manifest_value({_lines::*}, "name") ? {_name})
+    set {_version} to manifest_value({_lines::*}, "version")
+    set {_state} to ""
+    if {_dir} is pkg_disabled_dir({_name}):
+        set {_state} to " (disabled)"
+    set {_suffix} to ""
+    if {_version} is set:
+        set {_suffix} to " v%{_version}%"
+    pkg_msg({_sender}, "package: %pkg_link({_title}, {_origin})%%{_suffix}%%{_state}%")
+    set {_description} to manifest_value({_lines::*}, "description")
+    if {_description} is set:
+        pkg_msg({_sender}, "description: %{_description}%")
+    if {_origin} is set:
+        pkg_msg({_sender}, "origin: %pkg_link({_origin}, {_origin})%")
+    pkg_info_requirements({_sender}, {_lines::*})
+
+command /package:
+    condition:
+        return whether sender has permission "pacskage.admin"
+    subcommand install <url: string>:
+        trigger:
+            pkg_install_report(sender, {_url})
+    subcommand update <name: word>:
+        trigger:
+            pkg_update_report(sender, {_name})
+    subcommand remove <name: word>:
+        trigger:
+            pkg_remove_report(sender, {_name})
+    subcommand enable <name: word>:
+        trigger:
+            pkg_enable_report(sender, {_name})
+    subcommand disable <name: word>:
+        trigger:
+            pkg_disable_report(sender, {_name})
+    subcommand info <name: word>:
+        trigger:
+            pkg_info_report(sender, {_name})
+    subcommand list:
+        trigger:
+            pkg_list_report(sender)
+    subcommand check:
+        trigger:
+            pkg_check_report(sender)
+    subcommand outdated:
+        trigger:
+            pkg_outdated_report(sender)
+    subcommand selfupdate:
+        trigger:
             pkg_selfupdate(sender)
-            stop
-        set {_name} to pkg_name({_pkg} ? "")
-        if {_name} is not set:
-            pkg_usage(sender)
-            stop
-        if {_effect} is "install":
-            pkg_install_report(sender, {_pkg})
-            stop
-        else if {_effect} is "update":
-            pkg_msg(sender, "updating %{_name}% from its origin...")
-            set {_status} to pkg_update({_name})
-            pkg_msg(sender, {_status} ? pkg_error() ? "update failed")
-            stop
-        else if {_effect} is "remove":
-            set {_dest} to pkg_resolve({_name})
-            if {_dest} is not set:
-                pkg_msg(sender, "package %{_name}% is not installed")
-                stop
-            dir_delete({_dest})
-            pkg_msg(sender, "removed %{_name}% - /sk reload scripts to apply")
-            stop
-        else if {_effect} is "enable":
-            set {_from} to pkg_disabled_dir({_name})
-            if dir_exists({_from}) = false:
-                if dir_exists(pkg_dir({_name})) is true:
-                    pkg_msg(sender, "package %{_name}% is already enabled")
-                    stop
-                pkg_msg(sender, "package %{_name}% is not installed")
-                stop
-            set {_missing::*} to pkg_missing({_from})
-            if {_missing::*} is set:
-                pkg_msg(sender, "cannot enable %{_name}%, missing: %{_missing::*}%")
-                stop
-            dir_rename({_from}, pkg_dir({_name}))
-            pkg_msg(sender, "enabled %{_name}% - /sk reload scripts to apply")
-            stop
-        else if {_effect} is "disable":
-            if dir_exists(pkg_disabled_dir({_name})) is true:
-                pkg_msg(sender, "package %{_name}% is already disabled")
-                stop
-            if dir_exists(pkg_dir({_name})) = false:
-                pkg_msg(sender, "package %{_name}% is not installed")
-                stop
-            dir_rename(pkg_dir({_name}), pkg_disabled_dir({_name}))
-            pkg_msg(sender, "disabled %{_name}% - /sk reload scripts to apply")
-            stop
-        else if {_effect} is "info":
-            set {_dir} to pkg_resolve({_name})
-            if {_dir} is not set:
-                pkg_msg(sender, "package %{_name}% is not installed")
-                stop
-            set {_state} to ""
-            if {_dir} is pkg_disabled_dir({_name}):
-                set {_state} to " (disabled)"
-            set {_lines::*} to manifest_lines({_dir})
-            set {_origin} to manifest_value({_lines::*}, "origin")
-            set {_title} to (manifest_value({_lines::*}, "name") ? {_name})
-            set {_version} to manifest_value({_lines::*}, "version")
-            set {_ver} to ""
-            if {_version} is set:
-                set {_ver} to " v%{_version}%"
-            pkg_msg(sender, "package: %pkg_link({_title}, {_origin})%%{_ver}%%{_state}%")
-            set {_description} to manifest_value({_lines::*}, "description")
-            if {_description} is set:
-                pkg_msg(sender, "description: %{_description}%")
-            if {_origin} is set:
-                pkg_msg(sender, "origin: %pkg_link({_origin}, {_origin})%")
-            set {_requires} to manifest_value({_lines::*}, "requires")
-            if {_requires} is set:
-                pkg_msg(sender, "requires:")
-                for {_entry} in split {_requires} at ",":
-                    pkg_msg(sender, requirement_status({_entry}) ? "  ?")
-            set {_packages} to manifest_value({_lines::*}, "packages")
-            if {_packages} is set:
-                pkg_msg(sender, "packages:")
-                for {_entry} in split {_packages} at ",":
-                    pkg_msg(sender, pkg_dep_status({_entry}) ? "  ?")
-            stop
+    subcommand awesome:
+        trigger:
+            pkg_awesome(sender)
+    trigger:
         pkg_usage(sender)
