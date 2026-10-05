@@ -46,11 +46,31 @@ local function trim(text: String) -> String:
 local function first_word(text: String) -> String:
     return first element of (split {_text} at " ")
 
+# the "#subfolder" part of an install link, without trailing slashes, or
+# nothing when there is none. e.g. .../repo@v1.2.0#packages/foo -> packages/foo
+local function pkg_sub(url: String) -> String:
+    set {_parts::*} to split {_url} at "#"
+    if size of {_parts::*} < 2:
+        stop
+    set {_path} to trim({_parts::2})
+    if {_path} is not set:
+        stop
+    while {_path} ends with "/":
+        set {_path} to the first (length of {_path} - 1) characters of {_path}
+    if length of {_path} <= 0:
+        stop
+    return {_path}
+
+# the link without its "#subfolder" part
+local function pkg_url_base(url: String) -> String:
+    return first element of (split {_url} at "#")
+
 # an optional @ref pinned to an install link: a tag, branch, or commit to
 # fetch instead of the default branch, e.g. .../repo@v1.2.0. only an @ in the
 # final path segment counts, so a user@host credential earlier in the url is
 # left untouched
 local function pkg_ref(url: String) -> String:
+    set {_url} to pkg_url_base({_url})
     set {_last} to last element of (split {_url} at "/")
     if {_last} does not contain "@":
         stop
@@ -60,8 +80,11 @@ local function pkg_ref(url: String) -> String:
     return {_ref}
 
 # strips decoration from a repo link: an @ref pin (read separately by
-# pkg_ref), a trailing slash, a .git suffix
+# pkg_ref), a trailing slash, a .git suffix. a "#subfolder" is kept so
+# packages from the same monorepo stay distinct
 local function repo_url(url: String) -> String:
+    set {_sub} to pkg_sub({_url})
+    set {_url} to pkg_url_base({_url})
     set {_ref} to pkg_ref({_url})
     if {_ref} is set:
         set {_url} to the first (length of {_url} - length of {_ref} - 1) characters of {_url}
@@ -69,13 +92,16 @@ local function repo_url(url: String) -> String:
         set {_url} to the first (length of {_url} - 1) characters of {_url}
     if {_url} ends with ".git":
         set {_url} to the first (length of {_url} - 4) characters of {_url}
+    if {_sub} is set:
+        return "%{_url}%#%{_sub}%"
     return {_url}
 
 # package name from a link or bare name, - is reserved as the disabled marker.
+# a "#subfolder" names the package after its last segment.
 # part of the public api: other packages may call this to learn the folder a
 # url installs as
 function pkg_name(url: String) -> String:
-    set {_name} to (last element of (split repo_url({_url}) at "/"))
+    set {_name} to (last element of (split (pkg_sub({_url}) ? repo_url({_url})) at "/"))
     if {_name} ends with ".zip":
         set {_name} to the first (length of {_name} - 4) characters of {_name}
     if any:
@@ -90,6 +116,7 @@ function pkg_name(url: String) -> String:
 # turns a repo link into an archive link for its pinned @ref, or the default
 # branch (HEAD) when none is given; direct .zip links pass through unchanged
 local function pkg_zip_url(url: String) -> String:
+    set {_url} to pkg_url_base({_url})
     if {_url} ends with ".zip":
         return {_url}
     set {_ref} to (pkg_ref({_url}) ? "HEAD")
@@ -253,20 +280,28 @@ local function http_get(url: String) -> Object:
         stop
     return {_response}.body()
 
-local function zip_extract(bytes: Object, dest: String):
+# extracts an archive into dest. a non-empty sub keeps only the files under
+# that subfolder of the archive, re-rooted at it
+local function zip_extract(bytes: Object, dest: String, sub: String):
     set {_root} to Path.of({_dest})
     set {_options} to [StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING]
     set {_zip} to new ZipInputStream(new ByteArrayInputStream({_bytes}))
     set {_entry} to {_zip}.getNextEntry()
     while {_entry} is set:
-        zip_extract_entry({_zip}, {_entry}, {_root}, {_options})
+        zip_extract_entry({_zip}, {_entry}, {_root}, {_options}, {_sub})
         set {_entry} to {_zip}.getNextEntry()
     {_zip}.close()
 
-local function zip_extract_entry(zip: Object, entry: Object, root: Object, options: Object):
+local function zip_extract_entry(zip: Object, entry: Object, root: Object, options: Object, sub: String):
     set {_relative} to strip_root({_entry}.getName())
     if {_relative} is not set:
         stop
+    if length of {_sub} > 0:
+        if {_relative} is "%{_sub}%/":
+            stop
+        if {_relative} does not start with "%{_sub}%/":
+            stop
+        set {_relative} to sub({_relative}, (length of {_sub} + 2))
     set {_target} to {_root}.resolve({_relative}).normalize()
     if {_target}.startsWith({_root}) = false:
         stop
@@ -399,8 +434,16 @@ local function pkg_install(url: String, depth: Integer) -> String:
         pkg_fail("download failed for %{_zip}%")
         stop
     set {_dest} to pkg_dir({_name})
+    set {_sub} to pkg_sub({_url})
     dir_create({_dest})
-    zip_extract({_bytes}, {_dest})
+    zip_extract({_bytes}, {_dest}, {_sub} ? "")
+    if all:
+        {_sub} is set
+        Files.list(Path.of({_dest})).findAny().isPresent() is false
+    then:
+        dir_delete({_dest})
+        pkg_fail("archive does not contain subfolder %{_sub}%")
+        stop
     # the manifest name wins over the url-derived one
     set {_manifest} to manifest({_dest}, "name")
     set {_rename} to pkg_name({_manifest} ? "")
@@ -455,7 +498,7 @@ local function pkg_update(name: String) -> String:
     if dir_exists({_tmp}) is true:
         dir_delete({_tmp})
     dir_create({_tmp})
-    zip_extract({_bytes}, {_tmp})
+    zip_extract({_bytes}, {_tmp}, pkg_sub({_origin}) ? "")
     if Files.list(Path.of({_tmp})).findAny().isPresent() is false:
         dir_delete({_tmp})
         pkg_fail("downloaded archive from %{_origin}% is empty")
@@ -529,7 +572,7 @@ local function pkg_outdated_line(folder: String) -> String:
     if dir_exists({_tmp}) is true:
         dir_delete({_tmp})
     dir_create({_tmp})
-    zip_extract({_bytes}, {_tmp})
+    zip_extract({_bytes}, {_tmp}, pkg_sub({_origin}) ? "")
     set {_remote} to manifest({_tmp}, "version")
     dir_delete({_tmp})
     if any:
@@ -557,7 +600,7 @@ local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
     return ({_options::*} where [input starts with {_partial}])
 
 local function pkg_commands() -> Strings:
-    return "install <git url>[@version]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated", "browser", "selfupdate" and "awesome"
+    return "install <git url>[@version][#subfolder]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated", "browser", "selfupdate" and "awesome"
 
 # just the subcommand keywords (the first word of each entry)
 local function pkg_command_names() -> Strings:
