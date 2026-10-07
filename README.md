@@ -11,7 +11,7 @@ curl -o Skript/scripts/package.sk https://raw.githubusercontent.com/miberss/pacs
 ## Use
 
 ```
-/package install <git url>[@version]
+/package install <git url>[@version][#subfolder]
 /package (update|remove|enable|disable|info) <name>
 /package (list|check|outdated|selfupdate|awesome)
 ```
@@ -20,7 +20,8 @@ Packages are installed into `Skript/scripts/packages/`. Browse available package
 [awesome-pacskage](https://github.com/miberss/awesome-pacskage).
 
 Append `@version` to an install url to pin a specific tag, branch, or commit
-instead of the default branch.
+instead of the default branch. Append `#subfolder` to install one package from
+a repository subfolder.
 
 ## Manifest
 
