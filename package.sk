@@ -11,7 +11,6 @@ import:
     java.nio.file.Files
     java.nio.file.Path
     java.nio.file.StandardOpenOption
-    java.util.ArrayList
     java.util.Comparator
     java.util.zip.ZipInputStream
     org.bukkit.Bukkit
@@ -26,28 +25,32 @@ options:
     warn: <##ffcd75>
     error: <##b13e53>
 
-# subtext of {_text} from {_start}, to the end of the string by default
+on load:
+    set {-pacskage::scripts_root} to "%Skript.getInstance().getDataFolder().getCanonicalPath()%/scripts"
+    set {-pacskage::packages_root} to "%{-pacskage::scripts_root}%/packages"
+    set {-pacskage::self_path} to "%{-pacskage::scripts_root}%/package.sk"
+    set {-pacskage::plugin_manager} to Bukkit.getPluginManager()
+    set {-pacskage::http_client} to HttpClient.newBuilder().followRedirects(Redirect.NORMAL).build()
+    set {-pacskage::body_handler} to BodyHandlers.ofByteArray()
+    set {-pacskage::append_options} to [StandardOpenOption.CREATE, StandardOpenOption.APPEND]
+    set {-pacskage::write_options} to [StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING]
+    set {-pacskage::commands::*} to "install <git url>[@version][#subfolder]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated", "browser", "selfupdate" and "awesome"
+    set {-pacskage::command_names::*} to ({-pacskage::commands::*} transformed with [first_word(input)])
+    set {-pacskage::name_commands::*} to (({-pacskage::commands::*} where [input contains "<name>"]) transformed with [first_word(input)])
+
 local function sub(text: String, start: Integer, end: Integer = -1) -> String:
     if {_end} < 0:
         set {_end} to length of {_text}
     return subtext of {_text} from {_start} to {_end}
 
-# nothing comes back for blank input, so trimmed blanks read as absent
 local function trim(text: String) -> String:
-    while {_text} starts with " ":
-        set {_text} to sub({_text}, 2)
-    while {_text} ends with " ":
-        set {_text} to the first (length of {_text} - 1) characters of {_text}
-    if length of {_text} <= 0:
-        stop
-    return {_text}
+    set {_text} to {_text}.trim()
+    if length of {_text} > 0:
+        return {_text}
 
-# first space-delimited word of a string
 local function first_word(text: String) -> String:
     return first element of (split {_text} at " ")
 
-# the "#subfolder" part of an install link, without trailing slashes, or
-# nothing when there is none. e.g. .../repo@v1.2.0#packages/foo -> packages/foo
 local function pkg_sub(url: String) -> String:
     set {_parts::*} to split {_url} at "#"
     if size of {_parts::*} < 2:
@@ -56,19 +59,15 @@ local function pkg_sub(url: String) -> String:
     if {_path} is not set:
         stop
     while {_path} ends with "/":
-        set {_path} to the first (length of {_path} - 1) characters of {_path}
+        set {_path} to first ((length of {_path}) - 1) characters of {_path}
     if length of {_path} <= 0:
         stop
     return {_path}
 
-# the link without its "#subfolder" part
 local function pkg_url_base(url: String) -> String:
     return first element of (split {_url} at "#")
 
-# an optional @ref pinned to an install link: a tag, branch, or commit to
-# fetch instead of the default branch, e.g. .../repo@v1.2.0. only an @ in the
-# final path segment counts, so a user@host credential earlier in the url is
-# left untouched
+# Only an @ in the final path segment is a ref.
 local function pkg_ref(url: String) -> String:
     set {_url} to pkg_url_base({_url})
     set {_last} to last element of (split {_url} at "/")
@@ -79,31 +78,25 @@ local function pkg_ref(url: String) -> String:
         stop
     return {_ref}
 
-# strips decoration from a repo link: an @ref pin (read separately by
-# pkg_ref), a trailing slash, a .git suffix. a "#subfolder" is kept so
-# packages from the same monorepo stay distinct
 local function repo_url(url: String) -> String:
     set {_sub} to pkg_sub({_url})
     set {_url} to pkg_url_base({_url})
     set {_ref} to pkg_ref({_url})
     if {_ref} is set:
-        set {_url} to the first (length of {_url} - length of {_ref} - 1) characters of {_url}
+        set {_url} to first (((length of {_url}) - (length of {_ref})) - 1) characters of {_url}
     if {_url} ends with "/":
-        set {_url} to the first (length of {_url} - 1) characters of {_url}
+        set {_url} to first ((length of {_url}) - 1) characters of {_url}
     if {_url} ends with ".git":
-        set {_url} to the first (length of {_url} - 4) characters of {_url}
+        set {_url} to first ((length of {_url}) - 4) characters of {_url}
     if {_sub} is set:
         return "%{_url}%#%{_sub}%"
     return {_url}
 
-# package name from a link or bare name, - is reserved as the disabled marker.
-# a "#subfolder" names the package after its last segment.
-# part of the public api: other packages may call this to learn the folder a
-# url installs as
+# Public API.
 function pkg_name(url: String) -> String:
     set {_name} to (last element of (split (pkg_sub({_url}) ? repo_url({_url})) at "/"))
     if {_name} ends with ".zip":
-        set {_name} to the first (length of {_name} - 4) characters of {_name}
+        set {_name} to first (length of {_name} - 4) characters of {_name}
     if any:
         length of {_name} <= 0
         {_name} is "." or ".."
@@ -113,8 +106,6 @@ function pkg_name(url: String) -> String:
         stop
     return {_name}
 
-# turns a repo link into an archive link for its pinned @ref, or the default
-# branch (HEAD) when none is given; direct .zip links pass through unchanged
 local function pkg_zip_url(url: String) -> String:
     set {_url} to pkg_url_base({_url})
     if {_url} ends with ".zip":
@@ -122,19 +113,15 @@ local function pkg_zip_url(url: String) -> String:
     set {_ref} to (pkg_ref({_url}) ? "HEAD")
     return "%repo_url({_url})%/archive/%{_ref}%.zip"
 
-local function pkg_root() -> String:
-    return "%scripts_root()%/packages"
-
 local function pkg_dir(name: String) -> String:
-    return "%pkg_root()%/%{_name}%"
+    return "%{-pacskage::packages_root}%/%{_name}%"
 
 local function pkg_disabled_dir(name: String) -> String:
-    return "%pkg_root()%/-%{_name}%"
+    return "%{-pacskage::packages_root}%/-%{_name}%"
 
 local function pkg_tmp_dir(name: String) -> String:
-    return Path.of("%scripts_root()%/../.pacskage-tmp-%{_name}%").normalize().toString()
+    return (Path.of("%{-pacskage::scripts_root}%/../.pacskage-tmp-%{_name}%").normalize().toString())
 
-# linked name with " v<version>" inline (if any) and a (disabled) marker
 local function pkg_display(folder: String) -> String:
     set {_lines::*} to manifest_lines(pkg_dir({_folder}))
     set {_origin} to manifest_value({_lines::*}, "origin")
@@ -147,7 +134,6 @@ local function pkg_display(folder: String) -> String:
         return "%pkg_link({_name}, {_origin})%%{_suffix}%"
     return "%pkg_link({_name}, {_origin})%%{_suffix}% (disabled)"
 
-# drops the root folder archives wrap their content in (repo-HEAD/...)
 local function strip_root(path: String) -> String:
     set {_slash} to first index of "/" in {_path}
     if {_slash} <= 0:
@@ -164,15 +150,14 @@ local function version_at_least(version: String, minimum: String) -> Boolean:
     set {_want::*} to split (first element of (split {_minimum} at "-")) at "."
     set {_count} to max(size of {_have::*}, size of {_want::*})
     loop {_count} times:
-        set {_a} to ({_have::%loop-number%} parsed as integer) ? 0
-        set {_b} to ({_want::%loop-number%} parsed as integer) ? 0
+        set {_a} to (({_have::%loop-number%} parsed as integer) ? 0)
+        set {_b} to (({_want::%loop-number%} parsed as integer) ? 0)
         if {_a} > {_b}:
             return true
         if {_a} < {_b}:
             return false
     return true
 
-# first "key: value" line of a manifest, comment (#) lines are skipped
 local function manifest_value(lines: Strings, key: String) -> String:
     for {_line} in {_lines::*}:
         set {_value} to manifest_line_value({_line}, {_key})
@@ -187,48 +172,34 @@ local function manifest_line_value(line: String, key: String) -> String:
         stop
     return trim(sub({_line}, (length of {_key} + 2)))
 
-# the manifest lines of a package directory, for reading several keys at once
 local function manifest_lines(dir: String) -> Strings:
-    return file_lines("%{_dir}%/package.txt")
+    set {_path} to "%{_dir}%/package.txt"
+    if dir_exists({_path}) = false:
+        stop
+    return (...Files.readAllLines(Path.of({_path})).toArray())
 
-# a single manifest value from a package directory
 local function manifest(dir: String, key: String) -> String:
     return manifest_value(manifest_lines({_dir}), {_key})
 
-# one "requires" entry is a plugin name, optionally followed by >= version
-local function requirement_name(entry: String) -> String:
-    return trim(first element of (split {_entry} at ">="))
-
-local function requirement_min(entry: String) -> String:
-    if {_entry} does not contain ">=":
-        stop
-    return trim(last element of (split {_entry} at ">="))
-
-# all command/console output goes through here: [pacskage] prefix,
 local function pkg_msg(to: Object, message: String):
     send formatted "{@bracket}[{@brand}pacskage{@bracket}]<reset> {@body}%{_message}%" to {_to}
 
-# a package name as a clickable, underlined link to its origin (opens the
-# repo in a browser); a plain colored name when no origin is recorded
 local function pkg_link(name: String, url: String) -> String:
     if {_url} is not set:
         return "{@link}%{_name}%{@body}"
     return "<click:open_url:%{_url}%>{@link}<underlined>%{_name}%</underlined></click>{@body}"
 
 local function pkg_fail(message: String):
-    set {-package::error} to {_message}
+    set {-pacskage::error} to {_message}
 
-local function pkg_error() -> String:
-    set {_message} to {-package::error}
-    delete {-package::error}
-    return {_message}
-
-local function scripts_root() -> String:
-    set {_data} to Skript.getInstance().getDataFolder().getCanonicalPath()
-    return "%{_data}%/scripts"
+local function pkg_error(fallback: String = "failed") -> String:
+    set {_message} to {-pacskage::error}
+    delete {-pacskage::error}
+    return {_message} ? {_fallback}
 
 local function dir_exists(path: String) -> Boolean:
-    return whether Files.exists(Path.of({_path})) = true
+    set {_path} to Path.of({_path})
+    return Files.exists({_path})
 
 local function dir_create(path: String):
     Files.createDirectories(Path.of({_path}))
@@ -237,11 +208,11 @@ local function dir_rename(from: String, to: String):
     Files.move(Path.of({_from}), Path.of({_to}))
 
 local function pkg_list() -> Strings:
-    if dir_exists(pkg_root()) = false:
+    if dir_exists({-pacskage::packages_root}) = false:
         stop
-    set {_paths::*} to (...Files.list(Path.of(pkg_root())).sorted().toArray())
+    set {_paths::*} to (...Files.list(Path.of({-pacskage::packages_root})).sorted().toArray())
     set {_dirs::*} to ({_paths::*} where [(Files.isDirectory(input)) is true])
-    return ({_dirs::*} transformed with [input.getFileName().toString()])
+    return ({_dirs::*} transformed with [(input.getFileName().toString())])
 
 # deletes contents before their parent folders (deepest paths first)
 local function dir_delete(path: String):
@@ -249,31 +220,22 @@ local function dir_delete(path: String):
     for {_path} in {_paths::*}:
         Files.delete({_path})
 
-local function file_lines(path: String) -> Strings:
-    if dir_exists({_path}) = false:
-        stop
-    set {_lines::*} to (...Files.readAllLines(Path.of({_path})).toArray())
-    return {_lines::*}
-
 local function file_append_line(path: String, line: String):
-    set {_options} to [StandardOpenOption.CREATE, StandardOpenOption.APPEND]
-    Files.writeString(Path.of({_path}), "%{_line}%%nl%", {_options})
+    Files.writeString(Path.of({_path}), "%{_line}%%nl%", {-pacskage::append_options})
 
 local function plugin_version(name: String) -> String:
-    set {_plugin} to Bukkit.getPluginManager().getPlugin({_name})
+    set {_plugin} to {-pacskage::plugin_manager}.getPlugin({_name})
     if {_plugin} is not set:
         stop
     return {_plugin}.getDescription().getVersion()
 
-# returns the response body bytes, or nothing if anything fails
 local function http_get(url: String) -> Object:
     set {_uri} to try URI.create({_url})
     set {_builder} to try HttpRequest.newBuilder({_uri})
     if {_builder} is not set:
         stop
     set {_request} to {_builder}.build()
-    set {_client} to HttpClient.newBuilder().followRedirects(Redirect.NORMAL).build()
-    set {_response} to try {_client}.send({_request}, BodyHandlers.ofByteArray())
+    set {_response} to try {-pacskage::http_client}.send({_request}, {-pacskage::body_handler})
     if {_response} is not set:
         stop
     if {_response}.statusCode() != 200:
@@ -282,13 +244,13 @@ local function http_get(url: String) -> Object:
 
 # extracts an archive into dest. a non-empty sub keeps only the files under
 # that subfolder of the archive, re-rooted at it
-local function zip_extract(bytes: Object, dest: String, sub: String):
+local function zip_extract(bytes: Object, dest: String, url: String):
+    set {_sub} to pkg_sub({_url}) ? ""
     set {_root} to Path.of({_dest})
-    set {_options} to [StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING]
     set {_zip} to new ZipInputStream(new ByteArrayInputStream({_bytes}))
     set {_entry} to {_zip}.getNextEntry()
     while {_entry} is set:
-        zip_extract_entry({_zip}, {_entry}, {_root}, {_options}, {_sub})
+        zip_extract_entry({_zip}, {_entry}, {_root}, {-pacskage::write_options}, {_sub})
         set {_entry} to {_zip}.getNextEntry()
     {_zip}.close()
 
@@ -302,7 +264,7 @@ local function zip_extract_entry(zip: Object, entry: Object, root: Object, optio
         if {_relative} does not start with "%{_sub}%/":
             stop
         set {_relative} to sub({_relative}, (length of {_sub} + 2))
-    set {_target} to {_root}.resolve({_relative}).normalize()
+    set {_target} to ({_root}.resolve({_relative}).normalize())
     if {_target}.startsWith({_root}) = false:
         stop
     if {_entry}.isDirectory() is true:
@@ -312,9 +274,8 @@ local function zip_extract_entry(zip: Object, entry: Object, root: Object, optio
     Files.write({_target}, {_zip}.readAllBytes(), {_options})
 
 local function pkg_find_folder(name: String) -> String:
-    return first element of (pkg_list() where [pkg_bare(input) is {_name}])
+    return first element of ((pkg_list()) where [(pkg_bare(input)) is {_name}])
 
-# the directory of an installed package, enabled or disabled, or nothing
 local function pkg_resolve(name: String) -> String:
     set {_folder} to pkg_find_folder({_name})
     if {_folder} is set:
@@ -323,35 +284,34 @@ local function pkg_resolve(name: String) -> String:
 local function pkg_installed(name: String) -> Boolean:
     return whether pkg_resolve({_name}) is set
 
-# one unmet plugin requirement as a readable line, nothing when satisfied
 local function requirement_missing(entry: String) -> String:
-    set {_name} to requirement_name({_entry})
+    set {_name} to trim(first element of (split {_entry} at ">="))
     if {_name} is not set:
         stop
     set {_installed} to plugin_version({_name})
     if {_installed} is not set:
         return "%{_name}% (not installed)"
-    set {_min} to requirement_min({_entry})
-    if {_min} is not set:
+    if {_entry} does not contain ">=":
         stop
+    set {_min} to trim(last element of (split {_entry} at ">="))
     if version_at_least({_installed}, {_min}) is true:
         stop
     return "%{_name}% >= %{_min}% (installed: %{_installed}%)"
 
-# resolves a dependency url to the installed package recorded as coming
-# from it, since a manifest name can differ from the url-derived one. part of
-# the public api: other packages may call this to test whether a url is
-# installed (returns its folder name, or nothing)
+# Public API.
 function pkg_by_origin(url: String) -> String:
     set {_url} to repo_url({_url})
     for {_folder} in pkg_list():
         set {_origin} to manifest(pkg_dir({_folder}), "origin")
-        if repo_url({_origin} ? "") is {_url}:
+        if {_origin} is not set:
+            continue
+        if repo_url({_origin}) is {_url}:
             return {_folder}
 
-# one missing package dependency, nothing when present (enabled or disabled)
 local function pkg_dep_missing(entry: String) -> String:
-    set {_entry} to (trim({_entry}) ? "")
+    set {_entry} to trim({_entry})
+    if {_entry} is not set:
+        stop
     if all:
         {_entry} contains "://"
         pkg_by_origin({_entry}) is set
@@ -364,18 +324,16 @@ local function pkg_dep_missing(entry: String) -> String:
         stop
     return "package %{_dep}% (not installed)"
 
-# every unmet requirement of an installed package, nothing when satisfied
 local function pkg_missing(dir: String) -> Strings:
     set {_lines::*} to manifest_lines({_dir})
     set {_requires::*} to split (manifest_value({_lines::*}, "requires") ? "") at ","
     set {_packages::*} to split (manifest_value({_lines::*}, "packages") ? "") at ","
-    return ({_requires::*} transformed with [requirement_missing(input)]) and ({_packages::*} transformed with [pkg_dep_missing(input)])
+    return (({_requires::*} transformed with [(requirement_missing(input))]) and ({_packages::*} transformed with [(pkg_dep_missing(input))]))
 
-# info row for one manifest entry: "  ok: ..." or "  missing: ..."
 local function requirement_status(entry: String) -> String:
     set {_entry} to trim({_entry})
     if {_entry} is not set:
-        stop
+        return "  ?"
     set {_unmet} to requirement_missing({_entry})
     if {_unmet} is set:
         return "  missing: %{_unmet}%"
@@ -384,21 +342,23 @@ local function requirement_status(entry: String) -> String:
 local function pkg_dep_status(entry: String) -> String:
     set {_entry} to trim({_entry})
     if {_entry} is not set:
-        stop
+        return "  ?"
     set {_unmet} to pkg_dep_missing({_entry})
     if {_unmet} is set:
         return "  missing: %{_unmet}%"
     return "  ok: %{_entry}%"
 
-# auto-installs url dependencies before the requirement check runs
 local function pkg_install_deps(dir: String, depth: Integer):
     set {_packages} to manifest({_dir}, "packages")
     if {_packages} is not set:
         stop
     for {_entry} in split {_packages} at ",":
-        pkg_install_dep(trim({_entry}) ? "", {_depth})
+        pkg_install_dep({_entry}, {_depth})
 
 local function pkg_install_dep(entry: String, depth: Integer):
+    set {_entry} to trim({_entry})
+    if {_entry} is not set:
+        stop
     if {_entry} does not contain "://":
         stop
     if pkg_by_origin({_entry}) is set:
@@ -411,7 +371,7 @@ local function pkg_install_dep(entry: String, depth: Integer):
     set {_installed} to pkg_install({_entry}, ({_depth} + 1))
     if {_installed} is set:
         stop
-    set {_reason} to (pkg_error() ? "failed")
+    set {_reason} to pkg_error()
     pkg_msg(console, "package dependency %{_entry}%: %{_reason}%")
 
 # downloads, extracts and registers one package; unmet requirements leave it
@@ -436,7 +396,7 @@ local function pkg_install(url: String, depth: Integer) -> String:
     set {_dest} to pkg_dir({_name})
     set {_sub} to pkg_sub({_url})
     dir_create({_dest})
-    zip_extract({_bytes}, {_dest}, {_sub} ? "")
+    zip_extract({_bytes}, {_dest}, {_url})
     if all:
         {_sub} is set
         Files.list(Path.of({_dest})).findAny().isPresent() is false
@@ -444,9 +404,9 @@ local function pkg_install(url: String, depth: Integer) -> String:
         dir_delete({_dest})
         pkg_fail("archive does not contain subfolder %{_sub}%")
         stop
-    # the manifest name wins over the url-derived one
     set {_manifest} to manifest({_dest}, "name")
-    set {_rename} to pkg_name({_manifest} ? "")
+    if {_manifest} is set:
+        set {_rename} to pkg_name({_manifest})
     if all:
         {_rename} is set
         {_rename} is not {_name}
@@ -468,7 +428,7 @@ function pkg_install_report(sender: Object, url: String):
     pkg_msg({_sender}, "installing from %{_url}%...")
     set {_installed} to pkg_install({_url}, 0)
     if {_installed} is not set:
-        pkg_msg({_sender}, pkg_error() ? "install failed")
+        pkg_msg({_sender}, pkg_error("install failed"))
         stop
     set {_disabled} to pkg_disabled_dir({_installed})
     if dir_exists({_disabled}) is true:
@@ -498,7 +458,7 @@ local function pkg_update(name: String) -> String:
     if dir_exists({_tmp}) is true:
         dir_delete({_tmp})
     dir_create({_tmp})
-    zip_extract({_bytes}, {_tmp}, pkg_sub({_origin}) ? "")
+    zip_extract({_bytes}, {_tmp}, {_origin})
     if Files.list(Path.of({_tmp})).findAny().isPresent() is false:
         dir_delete({_tmp})
         pkg_fail("downloaded archive from %{_origin}% is empty")
@@ -525,20 +485,16 @@ local function pkg_update(name: String) -> String:
         return "updated %{_name}%%{_version}% disabled, missing: %pkg_missing(pkg_disabled_dir({_name}))%"
     return "updated %{_name}%%{_version}% - /sk reload scripts to apply"
 
-# folder name without the leading disabled marker and numeric reorder prefixes
 local function pkg_bare(folder: String) -> String:
     set {_folder} to sub({_folder}, 2) if {_folder} starts with "-"
     return last element of (split {_folder} at "~")
 
 local function pkg_reorder(sender: Object):
-    set {_reorder} to function named "pkg_reorder_by_load_order"
+    set {_reorder} to function "pkg_reorder_by_load_order"
     if {_reorder} is not set:
         stop
-    run {_reorder} with arguments the current script, {_sender}
+    run {_reorder} with args script, {_sender}
 
-# one status line per installed package: flags enabled packages whose
-# requirements have since broken (red), and disabled ones now satisfiable
-# (green)
 local function pkg_check_line(folder: String) -> String:
     set {_name} to pkg_bare({_folder})
     set {_disabled} to whether {_folder} starts with "-"
@@ -572,7 +528,7 @@ local function pkg_outdated_line(folder: String) -> String:
     if dir_exists({_tmp}) is true:
         dir_delete({_tmp})
     dir_create({_tmp})
-    zip_extract({_bytes}, {_tmp}, pkg_sub({_origin}) ? "")
+    zip_extract({_bytes}, {_tmp}, {_origin})
     set {_remote} to manifest({_tmp}, "version")
     dir_delete({_tmp})
     if any:
@@ -584,8 +540,6 @@ local function pkg_outdated_line(folder: String) -> String:
         return "ok: %{_link}% (%{_current}%)"
     return "{@warn}outdated{@body}: %{_link}% (%{_current}% -> %{_remote}%)"
 
-# bare names of installed packages a subcommand can act on: enable only
-# offers disabled packages, disable only enabled ones, the rest offer all
 local function pkg_tab_names(sub: String) -> Strings:
     set {_folders::*} to pkg_list()
     if {_sub} is "enable":
@@ -599,29 +553,18 @@ local function pkg_tab_filter(options: Strings, partial: String) -> Strings:
         return {_options::*}
     return ({_options::*} where [input starts with {_partial}])
 
-local function pkg_commands() -> Strings:
-    return "install <git url>[@version][#subfolder]", "update <name>", "remove <name>", "enable <name>", "disable <name>", "info <name>", "list", "check", "outdated", "browser", "selfupdate" and "awesome"
-
-# just the subcommand keywords (the first word of each entry)
-local function pkg_command_names() -> Strings:
-    return (pkg_commands() transformed with [first_word(input)])
-
-# subcommands that take a package name, for completing the second argument
-local function pkg_name_commands() -> Strings:
-    return ((pkg_commands() where [input contains "<name>"]) transformed with [first_word(input)])
-
 # opens the package browser, which ships as its own optional package. it is not
 # a dependency of pacskage, so its function is only referenced by name at
 # runtime via script reflection
 local function pkg_browser(sender: Object, page: String):
-    set {_open} to function named "pacskage_browser"
+    set {_open} to function "pacskage_browser"
     if {_open} is not set:
         set {_url} to "https://github.com/miberss/pacskage-browser"
         pkg_msg({_sender}, "the package browser is not installed")
         pkg_msg({_sender}, "install it with <click:suggest_command:/package install %{_url}%>{@link}<underlined>/package install %{_url}%</underlined></click>")
         stop
-    set {_n} to ({_page} parsed as integer) ? 1
-    run {_open} with arguments {_sender}, {_n}
+    set {_n} to (({_page} parsed as integer) ? 1)
+    run {_open} with args {_sender}, {_n}
 
 # overwrites the running package.sk with the latest from the repo. the path is
 # fixed: pacskage always lives as package.sk at the scripts root
@@ -632,26 +575,25 @@ local function pkg_selfupdate(sender: Object):
     if {_bytes} is not set:
         pkg_msg({_sender}, "download failed for %{_url}%")
         stop
-    set {_options} to [StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING]
-    Files.write(Path.of("%scripts_root()%/package.sk"), {_bytes}, {_options})
+    Files.write(Path.of({-pacskage::self_path}), {_bytes}, {-pacskage::write_options})
     pkg_msg({_sender}, "updated pacskage - /sk reload package.sk to apply")
 
 local function pkg_usage(to: Object):
     pkg_msg({_to}, "commands (click one to use it):")
-    for {_entry} in pkg_commands():
+    for {_entry} in {-pacskage::commands::*}:
         set {_cmd} to first_word({_entry})
         pkg_msg({_to}, "  <click:suggest_command:/package %{_cmd}% >{@link}/package %{_entry}%</click>{@body}")
 
-# candidates for the /package argument currently being typed, given
-# everything after "package " in the buffer
 local function pkg_tab(rest: String) -> Strings:
     if {_rest} does not contain " ":
-        return pkg_tab_filter(pkg_command_names(), {_rest})
+        return pkg_tab_filter({-pacskage::command_names::*}, {_rest})
     set {_sub} to first_word({_rest})
-    if pkg_name_commands() does not contain {_sub}:
+    if {-pacskage::name_commands::*} does not contain {_sub}:
         stop
     set {_partial} to sub({_rest}, (length of {_sub} + 2))
-    return pkg_tab_filter(pkg_tab_names({_sub}), {_partial} ? "")
+    if {_partial} is not set:
+        return pkg_tab_names({_sub})
+    return pkg_tab_filter(pkg_tab_names({_sub}), {_partial})
 
 on TabCompleteEvent:
     set {_buffer} to event.getBuffer()
@@ -660,17 +602,11 @@ on TabCompleteEvent:
     if {_buffer} does not start with "package ":
         stop
     set {_rest} to sub({_buffer}, 9)
-    set {_list} to new ArrayList()
+    set {_completions::*} to pkg_tab({_rest} ? "")
     if {_rest} contains " ":
         set {_sub} to first_word({_rest})
-        # Prepend "<subcommand> " to each completion candidate returned by pkg_tab
-        for {_completion} in pkg_tab({_rest} ? ""):
-            {_list}.add("%{_sub}% %{_completion}%")
-    else:
-        # Standard subcommand completion (e.g., /package in<TAB>)
-        for {_completion} in pkg_tab({_rest} ? ""):
-            {_list}.add({_completion})
-    event.setCompletions({_list})
+        set {_completions::*} to ({_completions::*} transformed with ["%{_sub}% %input%"])
+    event.setCompletions({_completions::*})
 
 command /package [<effect: text>] [<pkg: text>]:
     permission: console and ops
@@ -715,7 +651,10 @@ command /package [<effect: text>] [<pkg: text>]:
         if {_effect} is "selfupdate":
             pkg_selfupdate(sender)
             stop
-        set {_name} to pkg_name({_pkg} ? "")
+        if {_pkg} is not set:
+            pkg_usage(sender)
+            stop
+        set {_name} to pkg_name({_pkg})
         if {_name} is not set:
             pkg_usage(sender)
             stop
@@ -726,7 +665,7 @@ command /package [<effect: text>] [<pkg: text>]:
         else if {_effect} is "update":
             pkg_msg(sender, "updating %{_name}% from its origin...")
             set {_status} to pkg_update({_name})
-            pkg_msg(sender, {_status} ? pkg_error() ? "update failed")
+            pkg_msg(sender, {_status} ? pkg_error("update failed"))
             pkg_reorder(sender)
             stop
         else if {_effect} is "remove":
@@ -791,11 +730,11 @@ command /package [<effect: text>] [<pkg: text>]:
             if {_requires} is set:
                 pkg_msg(sender, "requires:")
                 for {_entry} in split {_requires} at ",":
-                    pkg_msg(sender, requirement_status({_entry}) ? "  ?")
+                    pkg_msg(sender, requirement_status({_entry}))
             set {_packages} to manifest_value({_lines::*}, "packages")
             if {_packages} is set:
                 pkg_msg(sender, "packages:")
                 for {_entry} in split {_packages} at ",":
-                    pkg_msg(sender, pkg_dep_status({_entry}) ? "  ?")
+                    pkg_msg(sender, pkg_dep_status({_entry}))
             stop
         pkg_usage(sender)
